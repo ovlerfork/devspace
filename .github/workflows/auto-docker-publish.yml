@@ -195,7 +195,18 @@ jobs:
         run: |
           set -euo pipefail
           git remote add our-fork "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" || true
-          git push our-fork HEAD:refs/heads/patched --force
+          # Publish runs can overlap; the generated branch is a shared,
+          # force-updated ref, so retry a rejected update instead of failing.
+          for attempt in 1 2 3 4 5; do
+            if git push our-fork HEAD:refs/heads/patched --force; then
+              exit 0
+            fi
+            echo "patched branch update attempt ${attempt} was rejected; retrying"
+            sleep 5
+            git fetch --prune our-fork refs/heads/patched || true
+          done
+          echo "Failed to update the patched branch after 5 attempts." >&2
+          exit 1
 
       - name: Resolve metadata
         id: meta

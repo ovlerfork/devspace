@@ -41,6 +41,7 @@ assert_contains 'git am --3way "$patch"'
 assert_contains 'PATCHES=(../patchset/patches/cur/*.patch)'
 assert_contains 'rm -rf .github/workflows'
 assert_contains 'git push our-fork HEAD:refs/heads/patched --force'
+assert_contains 'for attempt in 1 2 3 4 5; do'
 assert_contains 'id: source_identity'
 
 # Tag policy lives in one place and manual dispatches force a rebuild.
