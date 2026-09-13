@@ -22,10 +22,10 @@ index 0000000..82faee9
 +test
 diff --git a/docker/Dockerfile b/docker/Dockerfile
 new file mode 100644
-index 0000000..df72e2c
+index 0000000..88178a9
 --- /dev/null
 +++ b/docker/Dockerfile
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,118 @@
 +# syntax=docker/dockerfile:1
 +
 +# DevSpace container image.
@@ -55,6 +55,8 @@ index 0000000..df72e2c
 +    npm install --global pnpm@11.25.0
 +
 +COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
++# The root postinstall runs during `pnpm install` and needs its helper script.
++COPY scripts ./scripts
 +RUN --mount=type=cache,id=devspace-pnpm-store,target=/pnpm-store \
 +    pnpm install --frozen-lockfile --store-dir=/pnpm-store
 +
