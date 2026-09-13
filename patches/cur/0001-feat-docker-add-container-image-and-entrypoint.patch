@@ -22,10 +22,10 @@ index 0000000..82faee9
 +test
 diff --git a/docker/Dockerfile b/docker/Dockerfile
 new file mode 100644
-index 0000000..71a0072
+index 0000000..df72e2c
 --- /dev/null
 +++ b/docker/Dockerfile
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,116 @@
 +# syntax=docker/dockerfile:1
 +
 +# DevSpace container image.
@@ -106,10 +106,23 @@ index 0000000..71a0072
 +      unzip; \
 +    rm -rf /var/lib/apt/lists/*
 +
++# Official Node images already ship uid/gid 1000 as `node`. Adopt that account
++# when it exists so the runtime contract stays `devspace`, and create the
++# account when a custom DEVSPACE_UID/GID is requested.
 +RUN set -eux; \
-+    groupadd --gid "${DEVSPACE_GID}" "${DEVSPACE_RUNTIME_USER}"; \
-+    useradd --uid "${DEVSPACE_UID}" --gid "${DEVSPACE_GID}" \
-+      --create-home --home-dir /data/home --shell /bin/bash "${DEVSPACE_RUNTIME_USER}"; \
++    mkdir -p /data/home; \
++    existing_entry="$(getent passwd "${DEVSPACE_UID}" || true)"; \
++    group_entry="$(getent group "${DEVSPACE_GID}" || true)"; \
++    if [ -n "${existing_entry}" ]; then \
++      usermod --login "${DEVSPACE_RUNTIME_USER}" --home /data/home "${existing_entry%%:*}"; \
++    elif [ -z "${group_entry}" ]; then \
++      groupadd --gid "${DEVSPACE_GID}" "${DEVSPACE_RUNTIME_USER}"; \
++      useradd --uid "${DEVSPACE_UID}" --gid "${DEVSPACE_RUNTIME_USER}" \
++        --create-home --home-dir /data/home --shell /bin/bash "${DEVSPACE_RUNTIME_USER}"; \
++    else \
++      useradd --uid "${DEVSPACE_UID}" --gid "${group_entry%%:*}" \
++        --create-home --home-dir /data/home --shell /bin/bash "${DEVSPACE_RUNTIME_USER}"; \
++    fi; \
 +    mkdir -p /workspaces /data/config /data/state /data/worktrees; \
 +    chown -R "${DEVSPACE_UID}:${DEVSPACE_GID}" /data /workspaces
 +
