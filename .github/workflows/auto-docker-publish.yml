@@ -1,0 +1,317 @@
+name: Auto Docker Publish
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_run:
+    workflows: ["Patch Check"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Upstream ref to build from. Leave empty to resolve it from the publish mode."
+        required: false
+        default: ""
+      devspace_version:
+        description: "Version to build. Must match the patched source package.json version."
+        required: false
+        default: ""
+      publish_mode:
+        description: "Image channel to publish. auto uses the newest published upstream release."
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - release
+          - prerelease
+          - dev
+      patchset_ref:
+        description: "Exact patchset commit used by a development publish"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: docker-publish-${{ github.event_name == 'workflow_dispatch' && inputs.publish_mode || github.event_name == 'schedule' && 'scheduled' || github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  PLATFORMS: linux/amd64,linux/arm64
+  IMAGE_NAME: devspace
+  UPSTREAM_REPOSITORY: Waishnav/devspace
+
+jobs:
+  publish:
+    if: >
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'patchset')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout patchset
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_mode == 'dev' && inputs.patchset_ref || 'patchset' }}
+          path: patchset
+
+      - name: Record exact patchset SHA
+        id: patchset
+        working-directory: patchset
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve upstream source ref
+        id: upstream_ref
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PUBLISH_MODE: ${{ inputs.publish_mode }}
+          INPUT_UPSTREAM_REF: ${{ inputs.upstream_ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          newest_release() {
+            local filter="$1"
+            gh api --paginate "repos/${UPSTREAM_REPOSITORY}/releases?per_page=100" \
+              | jq --slurp -r "[.[][] | select(.draft | not) | select(${filter})] | max_by(.published_at) | select(. != null) | \"\(.tag_name) \(.prerelease)\""
+          }
+
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            publish_mode="${INPUT_PUBLISH_MODE:-auto}"
+          elif [[ "${EVENT_NAME}" == "schedule" ]]; then
+            publish_mode=auto
+          else
+            publish_mode=dev
+          fi
+
+          if [[ -n "${INPUT_UPSTREAM_REF}" ]]; then
+            # An explicit ref is an unreleased build; auto has nothing to
+            # resolve it from.
+            if [[ "${publish_mode}" == "auto" ]]; then
+              publish_mode=dev
+            fi
+            resolved_ref="${INPUT_UPSTREAM_REF}"
+          else
+            case "${publish_mode}" in
+              dev)
+                resolved_ref=main
+                ;;
+              release)
+                resolved_ref="$(newest_release '(.prerelease | not)' | cut -d' ' -f1)"
+                ;;
+              prerelease)
+                resolved_ref="$(newest_release '.prerelease' | cut -d' ' -f1)"
+                ;;
+              auto)
+                newest="$(newest_release 'true')"
+                resolved_ref="${newest%% *}"
+                if [[ "${newest##* }" == "true" ]]; then
+                  publish_mode=prerelease
+                else
+                  publish_mode=release
+                fi
+                ;;
+              *)
+                echo "Unknown publish mode: ${publish_mode}" >&2
+                exit 1
+                ;;
+            esac
+          fi
+
+          if [[ -z "${resolved_ref}" || "${resolved_ref}" == "null" ]]; then
+            echo "No upstream ref matched publish mode ${publish_mode}." >&2
+            exit 1
+          fi
+
+          echo "ref=${resolved_ref}" >> "$GITHUB_OUTPUT"
+          echo "publish_mode=${publish_mode}" >> "$GITHUB_OUTPUT"
+          echo "Resolved upstream ref ${resolved_ref} (${publish_mode})."
+
+      - name: Checkout upstream source
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: ${{ steps.upstream_ref.outputs.ref }}
+          path: source
+          fetch-depth: 0
+
+      - name: Record exact upstream SHA
+        id: upstream
+        working-directory: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Apply patches
+        working-directory: source
+        run: |
+          set -euo pipefail
+          git config user.name "patch-ci"
+          git config user.email "ci@localhost"
+          git config rerere.enabled true
+
+          shopt -s nullglob
+          PATCHES=(../patchset/patches/cur/*.patch)
+          APPLIED=0
+          for patch in "${PATCHES[@]}"; do
+            NAME=$(basename "$patch")
+            echo "==== Applying: $NAME ===="
+            git am --3way "$patch"
+            APPLIED=$((APPLIED + 1))
+          done
+          echo "Applied ${APPLIED} patch(es)."
+
+      - name: Record pre-sanitization source SHA
+        id: source_identity
+        working-directory: source
+        run: echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Sanitize generated branch
+        working-directory: source
+        run: |
+          set -euo pipefail
+          if [[ -d .github/workflows ]]; then
+            rm -rf .github/workflows
+            git add -A .github/workflows
+            if ! git diff --cached --quiet; then
+              # Keep the generated commit stable across scheduled runs so the
+              # patched branch only moves when upstream or the patches move.
+              source_date="$(git log -1 --format=%aI HEAD)"
+              GIT_AUTHOR_DATE="${source_date}" GIT_COMMITTER_DATE="${source_date}" \
+                git commit -m "Drop upstream workflow files from generated patched branch"
+            fi
+          fi
+
+      - name: Update patched branch
+        working-directory: source
+        run: |
+          set -euo pipefail
+          git remote add our-fork "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" || true
+          git push our-fork HEAD:refs/heads/patched --force
+
+      - name: Resolve metadata
+        id: meta
+        working-directory: source
+        env:
+          INPUT_DEVSPACE_VERSION: ${{ inputs.devspace_version }}
+          PUBLISH_MODE: ${{ steps.upstream_ref.outputs.publish_mode }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+          SOURCE_SHA: ${{ steps.source_identity.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${INPUT_DEVSPACE_VERSION}" ]]; then
+            version="${INPUT_DEVSPACE_VERSION}"
+          else
+            version="$(node -p "require('./package.json').version")"
+          fi
+          owner="$(printf '%s' "${REPO_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          patched_sha="$(git rev-parse HEAD)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "owner=${owner}" >> "$GITHUB_OUTPUT"
+          echo "patched_sha=${patched_sha}" >> "$GITHUB_OUTPUT"
+          echo "source_sha=${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=${UPSTREAM_SHA}" >> "$GITHUB_OUTPUT"
+          echo "publish_mode=${PUBLISH_MODE}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version=${version} owner=${owner} source_sha=${SOURCE_SHA} upstream_sha=${UPSTREAM_SHA} patched_sha=${patched_sha} publish_mode=${PUBLISH_MODE}"
+
+      - name: Check image status
+        id: image_status
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          PUBLISH_MODE: ${{ steps.meta.outputs.publish_mode }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          RESOLVED_VERSION: ${{ steps.meta.outputs.version }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+          UPSTREAM_SHA: ${{ steps.meta.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/patchset/.github/workflows/docker-publish-policy.sh"
+
+          owner_type="$(gh api "users/${REPO_OWNER}" --jq '.type')"
+          if [[ "${owner_type}" == "Organization" ]]; then
+            package_path="orgs/${REPO_OWNER}/packages/container/${IMAGE_NAME}/versions?per_page=100"
+          else
+            package_path="users/${REPO_OWNER}/packages/container/${IMAGE_NAME}/versions?per_page=100"
+          fi
+
+          existing_tags="$(docker_publish_existing_tags "${package_path}")"
+          immutable_tag="$(docker_publish_immutable_tag "${PUBLISH_MODE}" "${RESOLVED_VERSION}" "${SOURCE_SHA}" "${UPSTREAM_SHA}")"
+
+          immutable_tag_exists=false
+          if grep -Fxq "${immutable_tag}" <<<"${existing_tags}"; then
+            immutable_tag_exists=true
+          fi
+
+          force=false
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            force=true
+          fi
+
+          should_build="$(docker_publish_should_build "${force}" "${immutable_tag_exists}")"
+
+          echo "should_build=${should_build}" >> "$GITHUB_OUTPUT"
+          echo "immutable_tag=${immutable_tag}" >> "$GITHUB_OUTPUT"
+          echo "immutable_tag_exists=${immutable_tag_exists}" >> "$GITHUB_OUTPUT"
+          echo "Image tag ${immutable_tag} exists=${immutable_tag_exists}; publishing=${should_build}."
+
+      - name: Compute image tags
+        id: tags
+        if: steps.image_status.outputs.should_build == 'true'
+        env:
+          IMAGE_BASE: ghcr.io/${{ steps.meta.outputs.owner }}/${{ env.IMAGE_NAME }}
+          PUBLISH_MODE: ${{ steps.meta.outputs.publish_mode }}
+          RESOLVED_VERSION: ${{ steps.meta.outputs.version }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+          UPSTREAM_SHA: ${{ steps.meta.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/patchset/.github/workflows/docker-publish-policy.sh"
+          tags="$(docker_publish_tags "${IMAGE_BASE}" "${PUBLISH_MODE}" "${RESOLVED_VERSION}" "${SOURCE_SHA}" "${UPSTREAM_SHA}")"
+          {
+            echo "tags<<EOF"
+            echo "${tags}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        if: steps.image_status.outputs.should_build == 'true'
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Buildx
+        if: steps.image_status.outputs.should_build == 'true'
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        if: steps.image_status.outputs.should_build == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        if: steps.image_status.outputs.should_build == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: source
+          file: source/docker/Dockerfile
+          platforms: ${{ env.PLATFORMS }}
+          build-args: |
+            DEVSPACE_VERSION=${{ steps.meta.outputs.version }}
+            DEVSPACE_SOURCE_SHA=${{ steps.meta.outputs.source_sha }}
+            DEVSPACE_UPSTREAM_SHA=${{ steps.meta.outputs.upstream_sha }}
+          tags: ${{ steps.tags.outputs.tags }}
+          push: true
+          provenance: false
+          cache-from: type=gha,scope=devspace-image
+          cache-to: type=gha,scope=devspace-image,mode=max
+
+      - name: Skip unchanged image
+        if: steps.image_status.outputs.should_build != 'true'
+        run: echo "No publish needed; ${IMAGE_NAME}:${{ steps.image_status.outputs.immutable_tag }} already exists."

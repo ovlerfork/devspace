@@ -1,0 +1,135 @@
+name: Patch Check
+
+on:
+  push:
+    branches: [patchset]
+  pull_request:
+    branches: [patchset, main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Upstream ref to test against"
+        required: false
+        default: "main"
+      publish_dev:
+        description: "Publish development images after a successful check"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  apply-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout patchset sources
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'patchset' }}
+          path: patchset
+
+      - name: Record exact patchset SHA
+        id: patchset
+        working-directory: patchset
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout upstream source
+        uses: actions/checkout@v7
+        with:
+          repository: Waishnav/devspace
+          ref: ${{ inputs.upstream_ref || 'main' }}
+          path: source
+          fetch-depth: 0
+
+      - name: Record exact upstream SHA
+        id: upstream
+        working-directory: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Apply patches
+        id: apply
+        working-directory: source
+        run: |
+          set -euo pipefail
+          git config user.name "patch-ci"
+          git config user.email "ci@localhost"
+          git config rerere.enabled true
+
+          shopt -s nullglob
+          PATCHES=(../patchset/patches/cur/*.patch)
+          FAILED=""
+          APPLIED=0
+          for patch in "${PATCHES[@]}"; do
+            NAME=$(basename "$patch")
+            echo "==== Applying: $NAME ===="
+            if ! git am --3way "$patch"; then
+              FAILED="$NAME"
+              break
+            fi
+            APPLIED=$((APPLIED + 1))
+          done
+
+          echo "applied=$APPLIED" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$FAILED" ]; then
+            echo "failed_patch=$FAILED" >> "$GITHUB_OUTPUT"
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+            mkdir -p /tmp/patch-artifacts
+            git am --show-current-patch > /tmp/patch-artifacts/failed-patch.patch 2>/dev/null || true
+            git diff --name-only --diff-filter=U > /tmp/patch-artifacts/conflict-files.txt 2>/dev/null || true
+            git status --short > /tmp/patch-artifacts/git-status.txt
+            git am --abort || true
+          else
+            echo "status=ok" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload conflict artifacts
+        if: steps.apply.outputs.status == 'conflict'
+        uses: actions/upload-artifact@v7
+        with:
+          name: patch-conflict
+          path: /tmp/patch-artifacts/
+
+      - name: Run patchset sanitizer
+        if: steps.apply.outputs.status == 'ok'
+        working-directory: patchset
+        run: bash scripts/check-no-upstream-refs.sh
+
+      - name: Validate shell scripts
+        if: steps.apply.outputs.status == 'ok'
+        working-directory: patchset
+        run: |
+          set -euo pipefail
+          bash -n scripts/*.sh .github/workflows/docker-publish-policy.sh tests/*.sh
+
+      - name: Run publish policy tests
+        if: steps.apply.outputs.status == 'ok'
+        working-directory: patchset
+        run: |
+          set -euo pipefail
+          bash tests/docker-publish-policy.test.sh
+          bash tests/docker-publish-layout.test.sh
+
+      - name: Dispatch development image publish
+        if: steps.apply.outputs.status == 'ok' && inputs.publish_dev == true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+          PATCHSET_SHA: ${{ steps.patchset.outputs.sha }}
+        run: |
+          set -euo pipefail
+          gh workflow run auto-docker-publish.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref patchset \
+            -f upstream_ref="${UPSTREAM_SHA}" \
+            -f patchset_ref="${PATCHSET_SHA}" \
+            -f publish_mode=dev
+
+      - name: Fail on patch conflict
+        if: steps.apply.outputs.status != 'ok'
+        run: exit 1

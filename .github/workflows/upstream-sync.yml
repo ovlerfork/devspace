@@ -1,0 +1,66 @@
+name: Upstream Sync
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch upstream read-only
+        run: |
+          set -euo pipefail
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/Waishnav/devspace.git
+          git fetch upstream main --tags --prune
+
+      - name: Update main from upstream
+        id: update
+        run: |
+          set -euo pipefail
+          REMOTE=$(git rev-parse upstream/main)
+          if git merge-base --is-ancestor "$REMOTE" main; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "main already contains upstream $REMOTE."
+            exit 0
+          fi
+          git checkout main
+          git reset --hard upstream/main
+          if [ -d .github/workflows ]; then
+            git config user.name "upstream-sync"
+            git config user.email "ci@localhost"
+            rm -rf .github/workflows
+            git add -A .github/workflows
+            if ! git diff --cached --quiet; then
+              git commit -m "Drop upstream workflow files from synced main"
+            fi
+          fi
+          git push origin main --force-with-lease
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$(git rev-parse upstream/main)" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger patch check
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh workflow run patch-check.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref patchset \
+            -f upstream_ref="${{ steps.update.outputs.upstream_sha }}" \
+            -f publish_dev=true

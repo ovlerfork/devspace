@@ -1,0 +1,214 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ovler <44089074+Ovler-Young@users.noreply.github.com>
+Date: Sun, 13 Sep 2026 17:31:33 +0000
+Subject: [PATCH] docs(docker): document container deployment
+
+
+diff --git a/docker/README.md b/docker/README.md
+new file mode 100644
+index 0000000..6d8f9a3
+--- /dev/null
++++ b/docker/README.md
+@@ -0,0 +1,159 @@
++# Running DevSpace in Docker
++
++The DevSpace image runs the MCP server on a machine that does not have Node
++installed, or keeps it in a container next to the projects you want to expose.
++It serves the same `/mcp` endpoint as a local install; only the way it is
++configured differs.
++
++Shell commands executed through DevSpace run with the container user's
++authority inside the container. The image is a packaging and isolation boundary
++for the server process, not a sandbox for the mounted projects.
++
++## Quick start
++
++```bash
++docker run -d --name devspace \
++  --restart unless-stopped \
++  -p 127.0.0.1:7676:7676 \
++  -e DEVSPACE_OAUTH_OWNER_TOKEN="$(openssl rand -hex 32)" \
++  -e DEVSPACE_ALLOWED_ROOTS=/workspaces \
++  -e DEVSPACE_PUBLIC_BASE_URL=https://devspace.example.com \
++  -v devspace-data:/data \
++  -v /home/me/projects:/workspaces \
++  ghcr.io/ovlerfork/devspace:latest
++```
++
++Then expose `127.0.0.1:7676` through a tunnel you control and point the MCP
++client at `https://devspace.example.com/mcp`. Tunnel lifecycle and credentials
++stay with you; the container only serves HTTP.
++
++`DEVSPACE_PUBLIC_BASE_URL` is optional, but set it whenever DevSpace is reached
++through a public hostname. DevSpace derives the inbound `Host` allowlist from it,
++so tunnel hostnames work without extra configuration.
++
++Check that the server is up:
++
++```bash
++curl -fsS http://127.0.0.1:7676/healthz
++docker logs devspace
++```
++
++## Compose
++
++`docker/compose.yaml` wraps the same settings:
++
++```bash
++export DEVSPACE_OAUTH_OWNER_TOKEN="$(openssl rand -hex 32)"
++export DEVSPACE_PROJECTS_DIR="$HOME/projects"
++export DEVSPACE_PUBLIC_BASE_URL=https://devspace.example.com
++docker compose -f docker/compose.yaml up -d
++```
++
++## Image tags
++
++| Tag | Source |
++| --- | --- |
++| `latest` | Latest published upstream release. |
++| `<version>` | Upstream release version, for example `1.0.8`. |
++| `<version>-<source-sha>` | Immutable build of a patched source revision. |
++| `prerelease`, `prerelease-<sha>` | Newest published upstream prerelease. |
++| `dev`, `dev-<upstream-sha>` | Upstream `main` plus this fork's patches. |
++
++Images are published for `linux/amd64` and `linux/arm64`. Releases built by the
++fork carry the upstream source revision and this fork's revision as image
++labels.
++
++## Configuration
++
++The first `serve` start writes `${DEVSPACE_CONFIG_DIR}/config.jsonc` from the
++environment below and keeps it in the `/data` volume afterwards. DevSpace reads
++the file directly; the environment is a container convenience for deployments
++that prefer environment variables.
++
++| Variable | Config key | Default |
++| --- | --- | --- |
++| `DEVSPACE_OAUTH_OWNER_TOKEN` | Owner secret (read from the environment, not stored) | required |
++| `HOST` | `server.host` | `0.0.0.0` |
++| `PORT` | `server.port` | `7676` |
++| `DEVSPACE_PUBLIC_BASE_URL` | `server.publicBaseUrl` | unset |
++| `DEVSPACE_ALLOWED_HOSTS` | `server.allowedHosts` | empty |
++| `DEVSPACE_TRUST_PROXY` | `server.trustProxy` | `false` |
++| `DEVSPACE_ALLOWED_ROOTS` | `workspaces.allowedRoots` | `/workspaces` |
++| `DEVSPACE_WORKTREE_ROOT` | `workspaces.worktreeRoot` | `/data/worktrees` |
++| `DEVSPACE_STATE_DIR` | `storage.stateDir` | `/data/state` |
++| `DEVSPACE_TOOL_MODE` | `tools.mode` | DevSpace default (`codex`) |
++| `DEVSPACE_WIDGETS` | `ui.enabled` | DevSpace default |
++| `DEVSPACE_ARTIFACTS` | `artifacts.enabled` | DevSpace default |
++| `DEVSPACE_ARTIFACT_MAX_FILE_BYTES` | `artifacts.maxFileBytes` | DevSpace default |
++| `DEVSPACE_SKILLS` | `skills.enabled` | DevSpace default |
++| `DEVSPACE_SKILL_PATHS` | `skills.paths` | DevSpace default |
++| `DEVSPACE_AGENT_DIR` | `skills.agentDir` | DevSpace default |
++| `DEVSPACE_SUBAGENTS` | `subagents.enabled` | DevSpace default |
++| `DEVSPACE_LOG_LEVEL` | `logging.level` | DevSpace default |
++| `DEVSPACE_LOG_FORMAT` | `logging.format` | DevSpace default |
++| `DEVSPACE_LOG_REQUESTS` | `logging.requests` | DevSpace default |
++| `DEVSPACE_LOG_ASSETS` | `logging.assets` | DevSpace default |
++| `DEVSPACE_LOG_TOOL_CALLS` | `logging.toolCalls` | DevSpace default |
++| `DEVSPACE_LOG_SHELL_COMMANDS` | `logging.shellCommands` | DevSpace default |
++| `DEVSPACE_OAUTH_ACCESS_TOKEN_TTL_SECONDS` | `oauth.accessTokenTtlSeconds` | DevSpace default |
++| `DEVSPACE_OAUTH_REFRESH_TOKEN_TTL_SECONDS` | `oauth.refreshTokenTtlSeconds` | DevSpace default |
++| `DEVSPACE_OAUTH_SCOPES` | `oauth.scopes` | DevSpace default |
++| `DEVSPACE_OAUTH_ALLOWED_REDIRECT_HOSTS` | `oauth.allowedRedirectHosts` | DevSpace default |
++
++List values accept commas or newlines. Boolean values accept `1`, `true`,
++`yes`, `on` and `0`, `false`, `no`, `off`.
++
++Two escape hatches replace the generated file:
++
++- `DEVSPACE_CONFIG_JSON` is written to `config.jsonc` on every start. Use it
++  when you want the deployment to stay declarative.
++- Mount your own `config.jsonc` into `${DEVSPACE_CONFIG_DIR}` and the
++  entrypoint leaves it alone.
++
++Everything DevSpace persists lives under `/data`: `config.jsonc`, agent state,
++and Git worktrees. `HOME` is `/data/home`, so credentials written by local agent
++CLIs that you install into the container also survive a restart.
++
++## Permissions
++
++The image serves as `devspace` (uid/gid `1000`). Mounted projects must be
++writable by that account, or you can run the container as the owner of the
++files:
++
++```bash
++docker run --user "$(id -u):$(id -g)" ...
++```
++
++A bind-mounted `config.jsonc` still has to be readable by that user. Named
++volumes inherit ownership from the image on first use.
++
++## Commands
++
++The entrypoint forwards arguments to the DevSpace CLI, so the image also works
++as a one-off client:
++
++```bash
++docker run --rm -v devspace-data:/data ghcr.io/ovlerfork/devspace:latest doctor
++docker run --rm -it -v devspace-data:/data ghcr.io/ovlerfork/devspace:latest init
++```
++
++`init` is interactive and is an alternative to the environment-driven setup. It
++writes `config.jsonc` and `auth.json` into the volume, after which `serve` only
++needs the same volume mounted.
++
++## Building locally
++
++```bash
++docker build -f docker/Dockerfile -t devspace:local .
++```
++
++## Updating
++
++```bash
++docker pull ghcr.io/ovlerfork/devspace:latest
++docker compose -f docker/compose.yaml up -d
++```
++
++The configuration schema is versioned. If a later DevSpace version reports a
++configuration error, remove `config.jsonc` from the volume and let the
++entrypoint regenerate it from the environment.
+diff --git a/docker/compose.yaml b/docker/compose.yaml
+new file mode 100644
+index 0000000..b754918
+--- /dev/null
++++ b/docker/compose.yaml
+@@ -0,0 +1,37 @@
++# DevSpace container deployment.
++#
++#   1. Generate an owner token:  openssl rand -hex 32
++#   2. Export it and the projects directory you want to expose:
++#        DEVSPACE_OAUTH_OWNER_TOKEN=... DEVSPACE_PROJECTS_DIR=~/projects docker compose up -d
++#   3. Expose 127.0.0.1:7676 through the tunnel you control.
++#
++# The container writes config.jsonc, state, and worktrees into the
++# `devspace-data` volume. Environment variables configure the first start;
++# later changes need `DEVSPACE_CONFIG_JSON` or an edited config.jsonc.
++
++services:
++  devspace:
++    image: ${DEVSPACE_IMAGE:-ghcr.io/ovlerfork/devspace:latest}
++    container_name: devspace
++    restart: unless-stopped
++    ports:
++      # Bind to loopback and let your tunnel forward to it. Publish on a wider
++      # address only if the network in front of it is already trusted.
++      - "${DEVSPACE_BIND_ADDRESS:-127.0.0.1}:7676:7676"
++    environment:
++      DEVSPACE_OAUTH_OWNER_TOKEN: ${DEVSPACE_OAUTH_OWNER_TOKEN:?set a random token, for example: openssl rand -hex 32}
++      DEVSPACE_ALLOWED_ROOTS: ${DEVSPACE_ALLOWED_ROOTS:-/workspaces}
++      DEVSPACE_PUBLIC_BASE_URL: ${DEVSPACE_PUBLIC_BASE_URL:-}
++      DEVSPACE_TOOL_MODE: ${DEVSPACE_TOOL_MODE:-codex}
++      DEVSPACE_WIDGETS: ${DEVSPACE_WIDGETS:-true}
++      DEVSPACE_LOG_LEVEL: ${DEVSPACE_LOG_LEVEL:-info}
++      DEVSPACE_LOG_FORMAT: ${DEVSPACE_LOG_FORMAT:-json}
++    volumes:
++      - devspace-data:/data
++      - ${DEVSPACE_PROJECTS_DIR:?set the host directory to expose}:/workspaces
++    # The container serves as uid 1000 by default. When the mounted projects
++    # belong to another account, match it here:
++    # user: "1001:1001"
++
++volumes:
++  devspace-data:
