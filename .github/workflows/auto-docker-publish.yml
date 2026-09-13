@@ -89,6 +89,7 @@ jobs:
             publish_mode=dev
           fi
 
+          release_tag=""
           if [[ -n "${INPUT_UPSTREAM_REF}" ]]; then
             # An explicit ref is an unreleased build; auto has nothing to
             # resolve it from.
@@ -103,13 +104,16 @@ jobs:
                 ;;
               release)
                 resolved_ref="$(newest_release '(.prerelease | not)' | cut -d' ' -f1)"
+                release_tag="${resolved_ref}"
                 ;;
               prerelease)
                 resolved_ref="$(newest_release '.prerelease' | cut -d' ' -f1)"
+                release_tag="${resolved_ref}"
                 ;;
               auto)
                 newest="$(newest_release 'true')"
                 resolved_ref="${newest%% *}"
+                release_tag="${resolved_ref}"
                 if [[ "${newest##* }" == "true" ]]; then
                   publish_mode=prerelease
                 else
@@ -129,6 +133,7 @@ jobs:
           fi
 
           echo "ref=${resolved_ref}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
           echo "publish_mode=${publish_mode}" >> "$GITHUB_OUTPUT"
           echo "Resolved upstream ref ${resolved_ref} (${publish_mode})."
 
@@ -198,6 +203,7 @@ jobs:
         env:
           INPUT_DEVSPACE_VERSION: ${{ inputs.devspace_version }}
           PUBLISH_MODE: ${{ steps.upstream_ref.outputs.publish_mode }}
+          RELEASE_TAG: ${{ steps.upstream_ref.outputs.release_tag }}
           REPO_OWNER: ${{ github.repository_owner }}
           UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
           SOURCE_SHA: ${{ steps.source_identity.outputs.sha }}
@@ -205,6 +211,10 @@ jobs:
           set -euo pipefail
           if [[ -n "${INPUT_DEVSPACE_VERSION}" ]]; then
             version="${INPUT_DEVSPACE_VERSION}"
+          elif [[ -n "${RELEASE_TAG}" ]]; then
+            # Upstream sets the released version at publish time; a release
+            # tag can be ahead of the package.json in its commit.
+            version="${RELEASE_TAG#v}"
           else
             version="$(node -p "require('./package.json').version")"
           fi

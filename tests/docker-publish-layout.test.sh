@@ -49,6 +49,12 @@ assert_contains 'docker_publish_should_build "${force}" "${immutable_tag_exists}
 assert_contains 'if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then'
 assert_contains 'publish_mode=auto'
 
+# Release tags lead the package.json in upstream commits, so the released
+# version comes from the resolved tag.
+assert_contains 'RELEASE_TAG: ${{ steps.upstream_ref.outputs.release_tag }}'
+assert_contains 'version="${RELEASE_TAG#v}"'
+assert_contains 'release_tag=${release_tag}'
+
 # The image builds from the patch-owned Dockerfile with version metadata.
 assert_contains 'file: source/docker/Dockerfile'
 assert_contains 'context: source'
