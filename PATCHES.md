@@ -85,4 +85,8 @@ fork-only change.
 - `Auto Docker Publish` applies the patch series, updates the `patched` branch,
   and builds `linux/amd64` and `linux/arm64` images from
   `docker/Dockerfile`. Scheduled and patch-check runs skip work whose immutable
-  tag already exists; manual dispatches rebuild.
+  tag already exists; manual dispatches rebuild. Release images take their
+  version from the upstream release tag because upstream sets the published
+  version at publish time. A release whose tree predates the container source
+  layout (no `pnpm-workspace.yaml`) is skipped with a warning instead of
+  producing an image the entrypoint cannot configure.
