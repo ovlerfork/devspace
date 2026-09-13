@@ -1,0 +1,38 @@
+# DevSpace container deployment.
+#
+#   1. Generate an owner token:  openssl rand -hex 32
+#   2. Export it and the projects directory you want to expose:
+#        DEVSPACE_OAUTH_OWNER_TOKEN=... DEVSPACE_PROJECTS_DIR=~/projects docker compose up -d
+#   3. Expose 127.0.0.1:7676 through the tunnel you control.
+#
+# The container writes config.jsonc, state, and worktrees into the
+# `devspace-data` volume. Environment variables configure the first start;
+# later changes need `DEVSPACE_CONFIG_JSON` or an edited config.jsonc.
+
+services:
+  devspace:
+    # Channels: :latest (newest upstream release), :prerelease, :dev.
+    image: ${DEVSPACE_IMAGE:-ghcr.io/ovlerfork/devspace:latest}
+    container_name: devspace
+    restart: unless-stopped
+    ports:
+      # Bind to loopback and let your tunnel forward to it. Publish on a wider
+      # address only if the network in front of it is already trusted.
+      - "${DEVSPACE_BIND_ADDRESS:-127.0.0.1}:7676:7676"
+    environment:
+      DEVSPACE_OAUTH_OWNER_TOKEN: "${DEVSPACE_OAUTH_OWNER_TOKEN:?set a random token, for example: openssl rand -hex 32}"
+      DEVSPACE_ALLOWED_ROOTS: ${DEVSPACE_ALLOWED_ROOTS:-/workspaces}
+      DEVSPACE_PUBLIC_BASE_URL: ${DEVSPACE_PUBLIC_BASE_URL:-}
+      DEVSPACE_TOOL_MODE: ${DEVSPACE_TOOL_MODE:-codex}
+      DEVSPACE_WIDGETS: ${DEVSPACE_WIDGETS:-true}
+      DEVSPACE_LOG_LEVEL: ${DEVSPACE_LOG_LEVEL:-info}
+      DEVSPACE_LOG_FORMAT: ${DEVSPACE_LOG_FORMAT:-json}
+    volumes:
+      - devspace-data:/data
+      - "${DEVSPACE_PROJECTS_DIR:?set the host directory to expose}:/workspaces"
+    # The container serves as uid 1000 by default. When the mounted projects
+    # belong to another account, match it here:
+    # user: "1001:1001"
+
+volumes:
+  devspace-data:
