@@ -1,0 +1,10 @@
+.git
+.github
+.agents
+.env
+.devspace-dev
+*.log
+dist
+node_modules
+releases
+test
