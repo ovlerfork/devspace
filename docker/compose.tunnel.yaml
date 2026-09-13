@@ -1,0 +1,55 @@
+# DevSpace with a Cloudflare Tunnel sidecar.
+#
+# The tunnel stays yours: create it in your Cloudflare account, keep the token
+# in the environment, and configure the public hostname's origin as
+# `http://devspace:7676` in the tunnel's ingress rules. DevSpace neither
+# creates nor manages the tunnel; it only serves HTTP on the compose network.
+#
+#   1. Generate an owner token:  openssl rand -hex 32
+#   2. Run with the tunnel token and the public hostname that tunnel serves:
+#        DEVSPACE_OAUTH_OWNER_TOKEN=<token> \
+#        CLOUDFLARE_TUNNEL_TOKEN=<tunnel-token> \
+#        DEVSPACE_PROJECTS_DIR="$HOME/projects" \
+#        DEVSPACE_PUBLIC_BASE_URL=https://devspace.example.com \
+#        docker compose -f docker/compose.tunnel.yaml up -d
+#
+# Nothing is published on the host: the tunnel reaches the container over the
+# compose network, so `127.0.0.1:7676` stays closed.
+
+services:
+  devspace:
+    # Channels: :latest (newest upstream release), :prerelease, :dev.
+    image: ${DEVSPACE_IMAGE:-ghcr.io/ovlerfork/devspace:latest}
+    container_name: devspace
+    restart: unless-stopped
+    environment:
+      DEVSPACE_OAUTH_OWNER_TOKEN: "${DEVSPACE_OAUTH_OWNER_TOKEN:?set a random token, for example: openssl rand -hex 32}"
+      DEVSPACE_ALLOWED_ROOTS: ${DEVSPACE_ALLOWED_ROOTS:-/workspaces}
+      # Must match the hostname the tunnel serves; DevSpace derives its inbound
+      # Host allowlist from this value.
+      DEVSPACE_PUBLIC_BASE_URL: "${DEVSPACE_PUBLIC_BASE_URL:?set the tunnel hostname, for example: https://devspace.example.com}"
+      DEVSPACE_TOOL_MODE: ${DEVSPACE_TOOL_MODE:-codex}
+      DEVSPACE_WIDGETS: ${DEVSPACE_WIDGETS:-true}
+      DEVSPACE_LOG_LEVEL: ${DEVSPACE_LOG_LEVEL:-info}
+      DEVSPACE_LOG_FORMAT: ${DEVSPACE_LOG_FORMAT:-json}
+    volumes:
+      - devspace-data:/data
+      - "${DEVSPACE_PROJECTS_DIR:?set the host directory to expose}:/workspaces"
+    # The container serves as uid 1000 by default. When the mounted projects
+    # belong to another account, match it here:
+    # user: "1001:1001"
+
+  tunnel:
+    image: ${CLOUDFLARE_IMAGE:-cloudflare/cloudflared:2026.9.1}
+    container_name: devspace-tunnel
+    restart: unless-stopped
+    environment:
+      # Read from the environment by cloudflared, so the token stays out of the
+      # process arguments.
+      TUNNEL_TOKEN: "${CLOUDFLARE_TUNNEL_TOKEN:?set your Cloudflare tunnel token}"
+    command: tunnel --no-autoupdate run
+    depends_on:
+      - devspace
+
+volumes:
+  devspace-data:
