@@ -46,25 +46,19 @@ env:
   UPSTREAM_REPOSITORY: Waishnav/devspace
 
 jobs:
-  publish:
+  resolve:
     if: >
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'patchset')
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 10
+    outputs:
+      supported: ${{ steps.upstream_ref.outputs.supported }}
+      ref: ${{ steps.upstream_ref.outputs.ref }}
+      release_tag: ${{ steps.upstream_ref.outputs.release_tag }}
+      publish_mode: ${{ steps.upstream_ref.outputs.publish_mode }}
     steps:
-      - name: Checkout patchset
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_mode == 'dev' && inputs.patchset_ref || 'patchset' }}
-          path: patchset
-
-      - name: Record exact patchset SHA
-        id: patchset
-        working-directory: patchset
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
       - name: Resolve upstream source ref
         id: upstream_ref
         env:
@@ -132,16 +126,43 @@ jobs:
             exit 1
           fi
 
+          # Release tags can predate the source layout the container image is
+          # built against. Skip those instead of publishing a broken image.
+          supported=true
+          if [[ -n "${release_tag}" ]] \
+            && ! gh api "repos/${UPSTREAM_REPOSITORY}/contents/pnpm-workspace.yaml?ref=${release_tag}" >/dev/null 2>&1; then
+            supported=false
+            echo "::warning::${release_tag} predates the container source layout; skipping this publish."
+          fi
+
           echo "ref=${resolved_ref}" >> "$GITHUB_OUTPUT"
           echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
           echo "publish_mode=${publish_mode}" >> "$GITHUB_OUTPUT"
-          echo "Resolved upstream ref ${resolved_ref} (${publish_mode})."
+          echo "supported=${supported}" >> "$GITHUB_OUTPUT"
+          echo "Resolved upstream ref ${resolved_ref} (${publish_mode}, supported=${supported})."
+
+  publish:
+    needs: resolve
+    if: needs.resolve.outputs.supported == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout patchset
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_mode == 'dev' && inputs.patchset_ref || 'patchset' }}
+          path: patchset
+
+      - name: Record exact patchset SHA
+        id: patchset
+        working-directory: patchset
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout upstream source
         uses: actions/checkout@v7
         with:
           repository: ${{ env.UPSTREAM_REPOSITORY }}
-          ref: ${{ steps.upstream_ref.outputs.ref }}
+          ref: ${{ needs.resolve.outputs.ref }}
           path: source
           fetch-depth: 0
 
@@ -213,8 +234,8 @@ jobs:
         working-directory: source
         env:
           INPUT_DEVSPACE_VERSION: ${{ inputs.devspace_version }}
-          PUBLISH_MODE: ${{ steps.upstream_ref.outputs.publish_mode }}
-          RELEASE_TAG: ${{ steps.upstream_ref.outputs.release_tag }}
+          PUBLISH_MODE: ${{ needs.resolve.outputs.publish_mode }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
           REPO_OWNER: ${{ github.repository_owner }}
           UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
           SOURCE_SHA: ${{ steps.source_identity.outputs.sha }}

@@ -37,12 +37,21 @@ assert_contains 'workflows: ["Patch Check"]'
 # current patch series.
 assert_contains 'repository: ${{ env.UPSTREAM_REPOSITORY }}'
 assert_contains 'UPSTREAM_REPOSITORY: Waishnav/devspace'
+assert_contains 'ref: ${{ needs.resolve.outputs.ref }}'
 assert_contains 'git am --3way "$patch"'
 assert_contains 'PATCHES=(../patchset/patches/cur/*.patch)'
 assert_contains 'rm -rf .github/workflows'
 assert_contains 'git push our-fork HEAD:refs/heads/patched --force'
 assert_contains 'for attempt in 1 2 3 4 5; do'
 assert_contains 'id: source_identity'
+
+# Release tags that predate the container source layout are skipped instead of
+# producing a broken image.
+assert_contains 'needs: resolve'
+assert_contains "if: needs.resolve.outputs.supported == 'true'"
+assert_contains 'contents/pnpm-workspace.yaml?ref=${release_tag}'
+assert_contains 'supported=${supported}'
+assert_contains 'skipping this publish'
 
 # Tag policy lives in one place and manual dispatches force a rebuild.
 assert_contains 'source "${GITHUB_WORKSPACE}/patchset/.github/workflows/docker-publish-policy.sh"'
@@ -52,7 +61,7 @@ assert_contains 'publish_mode=auto'
 
 # Release tags lead the package.json in upstream commits, so the released
 # version comes from the resolved tag.
-assert_contains 'RELEASE_TAG: ${{ steps.upstream_ref.outputs.release_tag }}'
+assert_contains 'RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}'
 assert_contains 'version="${RELEASE_TAG#v}"'
 assert_contains 'release_tag=${release_tag}'
 
