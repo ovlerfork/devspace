@@ -6,10 +6,10 @@ Subject: [PATCH] docs(docker): document container deployment
 
 diff --git a/docker/README.md b/docker/README.md
 new file mode 100644
-index 0000000..6d8f9a3
+index 0000000..c53c1a9
 --- /dev/null
 +++ b/docker/README.md
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,173 @@
 +# Running DevSpace in Docker
 +
 +The DevSpace image runs the MCP server on a machine that does not have Node
@@ -52,13 +52,27 @@ index 0000000..6d8f9a3
 +
 +## Compose
 +
-+`docker/compose.yaml` wraps the same settings:
++Two examples ship with the image:
++
++| File | Use |
++| --- | --- |
++| `docker/compose.yaml` | The server alone. It publishes loopback, and your own tunnel forwards to it. |
++| `docker/compose.tunnel.yaml` | The server plus a Cloudflare Tunnel sidecar. Nothing is published on the host. |
++
++Copy `docker/env.example` to `docker/.env` so the values live next to the
++compose file (Compose reads that file automatically), then:
 +
 +```bash
-+export DEVSPACE_OAUTH_OWNER_TOKEN="$(openssl rand -hex 32)"
-+export DEVSPACE_PROJECTS_DIR="$HOME/projects"
-+export DEVSPACE_PUBLIC_BASE_URL=https://devspace.example.com
++openssl rand -hex 32   # put the result in DEVSPACE_OAUTH_OWNER_TOKEN
 +docker compose -f docker/compose.yaml up -d
++```
++
++The tunnel variant needs its own token and a public hostname whose origin is
++`http://devspace:7676`. Create and own that tunnel in your Cloudflare account;
++DevSpace only serves HTTP on the compose network:
++
++```bash
++docker compose -f docker/compose.tunnel.yaml up -d
 +```
 +
 +## Image tags
@@ -169,9 +183,69 @@ index 0000000..6d8f9a3
 +The configuration schema is versioned. If a later DevSpace version reports a
 +configuration error, remove `config.jsonc` from the volume and let the
 +entrypoint regenerate it from the environment.
+diff --git a/docker/compose.tunnel.yaml b/docker/compose.tunnel.yaml
+new file mode 100644
+index 0000000..77a34e0
+--- /dev/null
++++ b/docker/compose.tunnel.yaml
+@@ -0,0 +1,54 @@
++# DevSpace with a Cloudflare Tunnel sidecar.
++#
++# The tunnel stays yours: create it in your Cloudflare account, keep the token
++# in the environment, and configure the public hostname's origin as
++# `http://devspace:7676` in the tunnel's ingress rules. DevSpace neither
++# creates nor manages the tunnel; it only serves HTTP on the compose network.
++#
++#   1. Generate an owner token:  openssl rand -hex 32
++#   2. Run with the tunnel token and the public hostname that tunnel serves:
++#        DEVSPACE_OAUTH_OWNER_TOKEN=<token> \
++#        CLOUDFLARE_TUNNEL_TOKEN=<tunnel-token> \
++#        DEVSPACE_PROJECTS_DIR="$HOME/projects" \
++#        DEVSPACE_PUBLIC_BASE_URL=https://devspace.example.com \
++#        docker compose -f docker/compose.tunnel.yaml up -d
++#
++# Nothing is published on the host: the tunnel reaches the container over the
++# compose network, so `127.0.0.1:7676` stays closed.
++
++services:
++  devspace:
++    image: ${DEVSPACE_IMAGE:-ghcr.io/ovlerfork/devspace:latest}
++    container_name: devspace
++    restart: unless-stopped
++    environment:
++      DEVSPACE_OAUTH_OWNER_TOKEN: "${DEVSPACE_OAUTH_OWNER_TOKEN:?set a random token, for example: openssl rand -hex 32}"
++      DEVSPACE_ALLOWED_ROOTS: ${DEVSPACE_ALLOWED_ROOTS:-/workspaces}
++      # Must match the hostname the tunnel serves; DevSpace derives its inbound
++      # Host allowlist from this value.
++      DEVSPACE_PUBLIC_BASE_URL: "${DEVSPACE_PUBLIC_BASE_URL:?set the tunnel hostname, for example: https://devspace.example.com}"
++      DEVSPACE_TOOL_MODE: ${DEVSPACE_TOOL_MODE:-codex}
++      DEVSPACE_WIDGETS: ${DEVSPACE_WIDGETS:-true}
++      DEVSPACE_LOG_LEVEL: ${DEVSPACE_LOG_LEVEL:-info}
++      DEVSPACE_LOG_FORMAT: ${DEVSPACE_LOG_FORMAT:-json}
++    volumes:
++      - devspace-data:/data
++      - "${DEVSPACE_PROJECTS_DIR:?set the host directory to expose}:/workspaces"
++    # The container serves as uid 1000 by default. When the mounted projects
++    # belong to another account, match it here:
++    # user: "1001:1001"
++
++  tunnel:
++    image: ${CLOUDFLARE_IMAGE:-cloudflare/cloudflared:2026.9.1}
++    container_name: devspace-tunnel
++    restart: unless-stopped
++    environment:
++      # Read from the environment by cloudflared, so the token stays out of the
++      # process arguments.
++      TUNNEL_TOKEN: "${CLOUDFLARE_TUNNEL_TOKEN:?set your Cloudflare tunnel token}"
++    command: tunnel --no-autoupdate run
++    depends_on:
++      - devspace
++
++volumes:
++  devspace-data:
 diff --git a/docker/compose.yaml b/docker/compose.yaml
 new file mode 100644
-index 0000000..b754918
+index 0000000..51f1b60
 --- /dev/null
 +++ b/docker/compose.yaml
 @@ -0,0 +1,37 @@
@@ -196,7 +270,7 @@ index 0000000..b754918
 +      # address only if the network in front of it is already trusted.
 +      - "${DEVSPACE_BIND_ADDRESS:-127.0.0.1}:7676:7676"
 +    environment:
-+      DEVSPACE_OAUTH_OWNER_TOKEN: ${DEVSPACE_OAUTH_OWNER_TOKEN:?set a random token, for example: openssl rand -hex 32}
++      DEVSPACE_OAUTH_OWNER_TOKEN: "${DEVSPACE_OAUTH_OWNER_TOKEN:?set a random token, for example: openssl rand -hex 32}"
 +      DEVSPACE_ALLOWED_ROOTS: ${DEVSPACE_ALLOWED_ROOTS:-/workspaces}
 +      DEVSPACE_PUBLIC_BASE_URL: ${DEVSPACE_PUBLIC_BASE_URL:-}
 +      DEVSPACE_TOOL_MODE: ${DEVSPACE_TOOL_MODE:-codex}
@@ -205,10 +279,48 @@ index 0000000..b754918
 +      DEVSPACE_LOG_FORMAT: ${DEVSPACE_LOG_FORMAT:-json}
 +    volumes:
 +      - devspace-data:/data
-+      - ${DEVSPACE_PROJECTS_DIR:?set the host directory to expose}:/workspaces
++      - "${DEVSPACE_PROJECTS_DIR:?set the host directory to expose}:/workspaces"
 +    # The container serves as uid 1000 by default. When the mounted projects
 +    # belong to another account, match it here:
 +    # user: "1001:1001"
 +
 +volumes:
 +  devspace-data:
+diff --git a/docker/env.example b/docker/env.example
+new file mode 100644
+index 0000000..01076f3
+--- /dev/null
++++ b/docker/env.example
+@@ -0,0 +1,32 @@
++# Substitution variables for docker/compose.yaml and docker/compose.tunnel.yaml.
++#
++# Copy this file to docker/.env and fill in the values; Docker Compose reads a
++# `.env` file from the compose file's directory automatically.
++
++# Owner secret created by `devspace init` on a local install, or any random
++# value of at least 16 characters. Generate one with: openssl rand -hex 32
++DEVSPACE_OAUTH_OWNER_TOKEN=
++
++# Host directory that is mounted as /workspaces inside the container.
++DEVSPACE_PROJECTS_DIR=$HOME/projects
++
++# Public hostname served by the tunnel that forwards to this container. Set it
++# whenever DevSpace is reached through anything other than localhost.
++# DEVSPACE_PUBLIC_BASE_URL=https://devspace.example.com
++
++# Host address the container port is published on. Keep loopback and let the
++# tunnel run on the host unless the network in front of it is trusted.
++# DEVSPACE_BIND_ADDRESS=127.0.0.1
++
++# Common overrides.
++# DEVSPACE_IMAGE=ghcr.io/ovlerfork/devspace:latest
++# DEVSPACE_ALLOWED_ROOTS=/workspaces
++# DEVSPACE_TOOL_MODE=codex
++# DEVSPACE_WIDGETS=true
++# DEVSPACE_LOG_LEVEL=info
++# DEVSPACE_LOG_FORMAT=json
++
++# cloudflared only; see docker/compose.tunnel.yaml. The tunnel is created and
++# owned by you, not by DevSpace.
++# CLOUDFLARE_TUNNEL_TOKEN=
++# CLOUDFLARE_IMAGE=cloudflare/cloudflared:2026.9.1
