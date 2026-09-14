@@ -58,6 +58,12 @@
     "agentDir": "~/.codex"
   },
   "subagents": {
+    // Enable the providers DevSpace may delegate to, and install their CLIs
+    // with DEVSPACE_AGENTS (see docker/README.md):
+    //   "providers": [
+    //     { "id": "codex", "enabled": true },
+    //     { "id": "claude", "enabled": true }
+    //   ]
     "enabled": false,
     "instructions": "on-demand",
     "providers": []

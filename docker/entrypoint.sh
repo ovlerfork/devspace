@@ -15,6 +15,61 @@ log() {
   printf 'devspace-entrypoint: %s\n' "$*" >&2
 }
 
+AGENT_PREFIX="${DEVSPACE_AGENT_PREFIX:-/data/agents}"
+export PATH="${AGENT_PREFIX}/bin:${PATH}"
+
+agent_package() {
+  case "$1" in
+    codex) printf '%s' "@openai/codex" ;;
+    claude) printf '%s' "@anthropic-ai/claude-code" ;;
+    copilot) printf '%s' "@github/copilot" ;;
+    opencode) printf '%s' "opencode-ai" ;;
+    pi) printf '%s' "@earendil-works/pi-coding-agent" ;;
+    *) return 1 ;;
+  esac
+}
+
+# DevSpace talks to claude, opencode, and pi through SDKs that ship in the
+# image; command providers such as codex and copilot need a CLI on PATH. These
+# installs land in the data volume so they survive container recreation.
+install_agents() {
+  local requested="${DEVSPACE_AGENTS:-}"
+  if [[ -z "${requested//[[:space:],]/}" ]]; then
+    return 0
+  fi
+  if ! command -v npm >/dev/null 2>&1; then
+    log "[agents] DEVSPACE_AGENTS is set, but npm is not available in this image"
+    return 0
+  fi
+  mkdir -p "${AGENT_PREFIX}"
+  local entry name version package spec
+  for entry in ${requested//,/ }; do
+    name="${entry%@*}"
+    version=""
+    if [[ "${entry}" == *@* ]]; then
+      version="${entry#*@}"
+    fi
+    if ! package="$(agent_package "${name}")"; then
+      log "[agents] unknown agent ${name}; supported: codex, claude, copilot, opencode, pi"
+      continue
+    fi
+    if command -v "${name}" >/dev/null 2>&1; then
+      log "[agents] ${name} is already available at $(command -v "${name}")"
+      continue
+    fi
+    spec="${package}"
+    if [[ -n "${version}" ]]; then
+      spec="${package}@${version}"
+    fi
+    log "[agents] installing ${spec} into ${AGENT_PREFIX}"
+    if npm install --global --prefix "${AGENT_PREFIX}" --no-fund --no-audit "${spec}"; then
+      log "[agents] installed ${name} at $(command -v "${name}")"
+    else
+      log "[agents] failed to install ${spec}; ${name} stays unavailable"
+    fi
+  done
+}
+
 if [[ $# -eq 0 ]]; then
   set -- serve
 fi
@@ -56,6 +111,8 @@ case "$1" in
         log "      Set it to the public URL your MCP clients use, for example https://devspace.example.com"
       fi
     fi
+
+    install_agents
     ;;
 esac
 
