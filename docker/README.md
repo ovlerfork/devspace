@@ -12,13 +12,16 @@ for the server process, not a sandbox for the mounted projects.
 ## Quick start
 
 ```bash
+mkdir -p ./devspace/config
+cp docker/config.example.jsonc ./devspace/config/config.jsonc
+$EDITOR ./devspace/config/config.jsonc   # set server.publicBaseUrl for your tunnel
+
 docker run -d --name devspace \
   --restart unless-stopped \
   -p 127.0.0.1:7676:7676 \
   -e DEVSPACE_OAUTH_OWNER_TOKEN="$(openssl rand -hex 32)" \
-  -e DEVSPACE_ALLOWED_ROOTS=/workspaces \
-  -e DEVSPACE_PUBLIC_BASE_URL=https://devspace.example.com \
   -v devspace-data:/data \
+  -v "$PWD/devspace/config:/data/config" \
   -v /home/me/projects:/workspaces \
   ghcr.io/ovlerfork/devspace:latest
 ```
@@ -32,9 +35,9 @@ Then expose `127.0.0.1:7676` through a tunnel you control and point the MCP
 client at `https://devspace.example.com/mcp`. Tunnel lifecycle and credentials
 stay with you; the container only serves HTTP.
 
-`DEVSPACE_PUBLIC_BASE_URL` is optional, but set it whenever DevSpace is reached
-through a public hostname. DevSpace derives the inbound `Host` allowlist from it,
-so tunnel hostnames work without extra configuration.
+`server.publicBaseUrl` is the one setting a tunnel deployment must get right:
+DevSpace derives the inbound `Host` allowlist and its OAuth issuer from it, and
+the entrypoint logs a note when it is missing.
 
 Check that the server is up:
 
@@ -56,7 +59,10 @@ Copy `docker/env.example` to `docker/.env` so the values live next to the
 compose file (Compose reads that file automatically), then:
 
 ```bash
-openssl rand -hex 32   # put the result in DEVSPACE_OAUTH_OWNER_TOKEN
+mkdir -p docker/config
+cp docker/config.example.jsonc docker/config/config.jsonc
+$EDITOR docker/config/config.jsonc   # set server.publicBaseUrl for your tunnel
+openssl rand -hex 32                 # put the result in DEVSPACE_OAUTH_OWNER_TOKEN
 docker compose -f docker/compose.yaml up -d
 ```
 
@@ -75,17 +81,24 @@ clients actually use:
 
 - Point clients at the `/mcp` path of the public URL, for example
   `https://devspace.example.com/mcp`.
-- Set `DEVSPACE_PUBLIC_BASE_URL` to that same public URL. It is the OAuth
-  issuer, so a mismatch leaves clients discovering `http://127.0.0.1:7676/...`
-  and reporting that the server does not implement OAuth.
+- Set `server.publicBaseUrl` in `config.jsonc` to that same public URL (or
+  `DEVSPACE_PUBLIC_BASE_URL` before the first start). It is the OAuth issuer,
+  so a mismatch leaves clients discovering `http://127.0.0.1:7676/...` and
+  reporting that the server does not implement OAuth.
 - The first connection opens an Owner password approval page. Enter the value of
   `DEVSPACE_OAUTH_OWNER_TOKEN`.
 - Registered clients and issued tokens live under `/data`, so they survive
   container restarts.
 
-Discovery answers at both well-known forms, so clients that probe
-`/.well-known/oauth-protected-resource` and clients that probe
-`/.well-known/oauth-protected-resource/mcp` both find the metadata.
+The unauthenticated `401` for `/mcp` advertises
+`https://<public-host>/.well-known/oauth-protected-resource/mcp` in its
+`WWW-Authenticate` header, which is where a spec-following client starts
+discovery. Check it directly when a client reports that the server does not
+implement OAuth:
+
+```bash
+curl -si https://devspace.example.com/mcp | grep -i www-authenticate
+```
 
 Clients other than ChatGPT may finish the flow on a redirect host that is not
 allowed by default. Add it with `DEVSPACE_OAUTH_ALLOWED_REDIRECT_HOSTS`; the
@@ -112,10 +125,33 @@ labels.
 
 ## Configuration
 
-The first `serve` start writes `${DEVSPACE_CONFIG_DIR}/config.jsonc` from the
-environment below and keeps it in the `/data` volume afterwards. DevSpace reads
-the file directly; the environment is a container convenience for deployments
-that prefer environment variables.
+DevSpace reads one durable configuration document, `config.jsonc`, from
+`${DEVSPACE_CONFIG_DIR}` (`/data/config` in the image). It accepts comments and
+trailing commas, is validated before the server starts, and is edited by
+`devspace config set` without losing comments. The owner secret is kept out of
+it: pass `DEVSPACE_OAUTH_OWNER_TOKEN` or let `devspace init` write `auth.json`
+next to the file.
+
+The compose examples mount a host directory at `/data/config`. Start from the
+commented example:
+
+```bash
+mkdir -p docker/config
+cp docker/config.example.jsonc docker/config/config.jsonc
+$EDITOR docker/config/config.jsonc   # set server.publicBaseUrl for tunnels
+```
+
+Skills and agent profiles placed in that directory persist with it. Change one
+value without leaving Docker:
+
+```bash
+docker compose exec devspace devspace config set publicBaseUrl https://devspace.example.com
+```
+
+The environment variables below are a convenience for deployments that prefer
+them: the entrypoint writes `config.jsonc` from the environment only when the
+file does not exist yet, so a mounted or edited file always wins. Setting
+`DEVSPACE_CONFIG_JSON` replaces the file on every start.
 
 | Variable | Config key | Default |
 | --- | --- | --- |
