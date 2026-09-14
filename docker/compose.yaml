@@ -1,13 +1,16 @@
 # DevSpace container deployment.
 #
-#   1. Generate an owner token:  openssl rand -hex 32
-#   2. Export it and the projects directory you want to expose:
+#   1. Provide durable settings, including the public URL behind a tunnel:
+#        mkdir -p docker/config
+#        cp docker/config.example.jsonc docker/config/config.jsonc
+#   2. Generate an owner token:  openssl rand -hex 32
+#   3. Export it and the projects directory you want to expose:
 #        DEVSPACE_OAUTH_OWNER_TOKEN=... DEVSPACE_PROJECTS_DIR=~/projects docker compose up -d
-#   3. Expose 127.0.0.1:7676 through the tunnel you control.
+#   4. Expose 127.0.0.1:7676 through the tunnel you control.
 #
-# The container writes config.jsonc, state, and worktrees into the
-# `devspace-data` volume. Environment variables configure the first start;
-# later changes need `DEVSPACE_CONFIG_JSON` or an edited config.jsonc.
+# `docker/config/config.jsonc` is the file DevSpace reads. Environment variables
+# only seed it when it is missing. State and worktrees stay in the
+# `devspace-data` volume.
 
 services:
   devspace:
@@ -29,9 +32,13 @@ services:
       DEVSPACE_LOG_FORMAT: ${DEVSPACE_LOG_FORMAT:-json}
     volumes:
       - devspace-data:/data
+      # Durable settings, skills, and agent profiles. See
+      # docker/config.example.jsonc. Set DEVSPACE_CONFIG_DIR_HOST to an absolute
+      # path when the stack runs without this compose file's directory.
+      - ${DEVSPACE_CONFIG_DIR_HOST:-./config}:/data/config
       - "${DEVSPACE_PROJECTS_DIR:?set the host directory to expose}:/workspaces"
-    # The container serves as uid 1000 by default. When the mounted projects
-    # belong to another account, match it here:
+    # The container serves as uid 1000 by default. When the mounted projects or
+    # config directory belong to another account, match it here:
     # user: "1001:1001"
 
 volumes:

@@ -1,0 +1,82 @@
+// DevSpace durable configuration.
+//
+// Copy this file into the directory the compose examples mount as
+// /data/config, then edit it:
+//
+//   mkdir -p docker/config
+//   cp docker/config.example.jsonc docker/config/config.jsonc
+//
+// DevSpace validates this document before it starts, accepts comments and
+// trailing commas, and `devspace config set <key> <value>` edits it without
+// discarding them. `$schema` points at the versioned JSON Schema for editor
+// completion. The owner secret is not stored here: pass it with
+// DEVSPACE_OAUTH_OWNER_TOKEN or let `devspace init` write auth.json next to
+// this file.
+{
+  "$schema": "https://raw.githubusercontent.com/Waishnav/devspace/main/schema/v1/devspace.schema.json",
+  "configVersion": 1,
+  "server": {
+    // Listen inside the container. The compose examples publish port 7676, or
+    // keep it closed and let a tunnel reach the container directly.
+    "host": "0.0.0.0",
+    "port": 7676,
+    // Public URL that MCP clients use. OAuth discovery advertises this value,
+    // so leave it null only while clients reach DevSpace on localhost. Behind
+    // a tunnel, set it to the public hostname:
+    //   "publicBaseUrl": "https://devspace.example.com"
+    "publicBaseUrl": null,
+    // Additional Host headers to accept. The public hostname above and
+    // localhost are allowed automatically.
+    "allowedHosts": [],
+    // Enable when a trusted proxy terminates TLS in front of DevSpace.
+    "trustProxy": false
+  },
+  "workspaces": {
+    // Directories inside the container that clients may open as workspaces.
+    "allowedRoots": ["/workspaces"],
+    "worktreeRoot": "/data/worktrees"
+  },
+  "storage": {
+    "stateDir": "/data/state"
+  },
+  "tools": {
+    // "codex" or "claude".
+    "mode": "codex"
+  },
+  "ui": {
+    "enabled": true
+  },
+  "artifacts": {
+    "enabled": false,
+    "maxFileBytes": 104857600
+  },
+  "skills": {
+    "enabled": true,
+    // Extra skill directories. Skills and agent profiles placed in this config
+    // directory persist in the mounted volume.
+    "paths": [],
+    "agentDir": "~/.codex"
+  },
+  "subagents": {
+    "enabled": false,
+    "instructions": "on-demand",
+    "providers": []
+  },
+  "logging": {
+    "level": "info",
+    "format": "json",
+    "requests": true,
+    "assets": false,
+    "toolCalls": true,
+    "shellCommands": false
+  },
+  "oauth": {
+    "accessTokenTtlSeconds": 3600,
+    "refreshTokenTtlSeconds": 2592000,
+    "scopes": ["devspace"],
+    "allowedResourceUrls": [],
+    // Hosts a client may use to receive the authorization redirect. The
+    // defaults cover ChatGPT and clients that finish on loopback.
+    "allowedRedirectHosts": ["chatgpt.com", "localhost", "127.0.0.1"]
+  }
+}
