@@ -5,8 +5,11 @@
 # `http://devspace:7676` in the tunnel's ingress rules. DevSpace neither
 # creates nor manages the tunnel; it only serves HTTP on the compose network.
 #
-#   1. Generate an owner token:  openssl rand -hex 32
-#   2. Run with the tunnel token and the public hostname that tunnel serves:
+#   1. Provide durable settings, including the hostname the tunnel serves:
+#        mkdir -p docker/config
+#        cp docker/config.example.jsonc docker/config/config.jsonc
+#   2. Generate an owner token:  openssl rand -hex 32
+#   3. Run with the tunnel token and the public hostname that tunnel serves:
 #        DEVSPACE_OAUTH_OWNER_TOKEN=<token> \
 #        CLOUDFLARE_TUNNEL_TOKEN=<tunnel-token> \
 #        DEVSPACE_PROJECTS_DIR="$HOME/projects" \
@@ -14,7 +17,8 @@
 #        docker compose -f docker/compose.tunnel.yaml up -d
 #
 # Nothing is published on the host: the tunnel reaches the container over the
-# compose network, so `127.0.0.1:7676` stays closed.
+# compose network, so `127.0.0.1:7676` stays closed. Environment variables here
+# seed `docker/config/config.jsonc` on first start; the file wins afterwards.
 
 services:
   devspace:
@@ -25,18 +29,24 @@ services:
     environment:
       DEVSPACE_OAUTH_OWNER_TOKEN: "${DEVSPACE_OAUTH_OWNER_TOKEN:?set a random token, for example: openssl rand -hex 32}"
       DEVSPACE_ALLOWED_ROOTS: ${DEVSPACE_ALLOWED_ROOTS:-/workspaces}
-      # Must match the hostname the tunnel serves; DevSpace derives its inbound
-      # Host allowlist from this value.
-      DEVSPACE_PUBLIC_BASE_URL: "${DEVSPACE_PUBLIC_BASE_URL:?set the tunnel hostname, for example: https://devspace.example.com}"
+      # Seeds server.publicBaseUrl when config.jsonc does not exist yet; the
+      # mounted config file stays authoritative afterwards. It must match the
+      # hostname the tunnel serves, because DevSpace derives its OAuth issuer
+      # and inbound Host allowlist from it.
+      DEVSPACE_PUBLIC_BASE_URL: ${DEVSPACE_PUBLIC_BASE_URL:-}
       DEVSPACE_TOOL_MODE: ${DEVSPACE_TOOL_MODE:-codex}
       DEVSPACE_WIDGETS: ${DEVSPACE_WIDGETS:-true}
       DEVSPACE_LOG_LEVEL: ${DEVSPACE_LOG_LEVEL:-info}
       DEVSPACE_LOG_FORMAT: ${DEVSPACE_LOG_FORMAT:-json}
     volumes:
       - devspace-data:/data
+      # Durable settings, skills, and agent profiles. See
+      # docker/config.example.jsonc. Set DEVSPACE_CONFIG_DIR_HOST to an absolute
+      # path when the stack runs without this compose file's directory.
+      - ${DEVSPACE_CONFIG_DIR_HOST:-./config}:/data/config
       - "${DEVSPACE_PROJECTS_DIR:?set the host directory to expose}:/workspaces"
-    # The container serves as uid 1000 by default. When the mounted projects
-    # belong to another account, match it here:
+    # The container serves as uid 1000 by default. When the mounted projects or
+    # config directory belong to another account, match it here:
     # user: "1001:1001"
 
   tunnel:

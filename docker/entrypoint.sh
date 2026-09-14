@@ -43,10 +43,18 @@ case "$1" in
       chmod 0600 "${CONFIG_PATH}"
       log "created ${CONFIG_PATH} from the container environment"
     fi
-    if [[ -z "${DEVSPACE_CONFIG_JSON:-}" ]] && [[ -z "${DEVSPACE_PUBLIC_BASE_URL:-}" ]] \
-      && ! grep -Eq '"publicBaseUrl"[[:space:]]*:[[:space:]]*"[^"]' "${CONFIG_PATH}" 2>/dev/null; then
-      log "note: DEVSPACE_PUBLIC_BASE_URL is not set, so OAuth discovery advertises the container-local address"
-      log "      Set it to the public URL your MCP clients use, for example https://devspace.example.com"
+
+    # Ask DevSpace for the effective value instead of parsing JSONC here.
+    effective_public_base_url="$(DEVSPACE_CONFIG_DIR="${CONFIG_DIR}" devspace config get 2>/dev/null \
+      | jq -r '.server.publicBaseUrl // ""' 2>/dev/null || true)"
+    if [[ -z "${effective_public_base_url}" ]]; then
+      if [[ -n "${DEVSPACE_PUBLIC_BASE_URL:-}" ]]; then
+        log "note: ${CONFIG_PATH} exists without server.publicBaseUrl, so DEVSPACE_PUBLIC_BASE_URL is ignored"
+        log "      Run: devspace config set publicBaseUrl ${DEVSPACE_PUBLIC_BASE_URL}"
+      else
+        log "note: server.publicBaseUrl is unset, so OAuth discovery advertises the container-local address"
+        log "      Set it to the public URL your MCP clients use, for example https://devspace.example.com"
+      fi
     fi
     ;;
 esac
