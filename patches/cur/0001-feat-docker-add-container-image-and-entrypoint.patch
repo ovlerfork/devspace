@@ -278,10 +278,10 @@ index 0000000..5c54099
 +console.log(`devspace-entrypoint: wrote ${target}`);
 diff --git a/docker/entrypoint.sh b/docker/entrypoint.sh
 new file mode 100644
-index 0000000..2b7d5ab
+index 0000000..f5cc39f
 --- /dev/null
 +++ b/docker/entrypoint.sh
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,54 @@
 +#!/usr/bin/env bash
 +# Container entrypoint for DevSpace.
 +#
@@ -326,6 +326,11 @@ index 0000000..2b7d5ab
 +      node /usr/local/lib/devspace/config-from-env.mjs "${CONFIG_PATH}"
 +      chmod 0600 "${CONFIG_PATH}"
 +      log "created ${CONFIG_PATH} from the container environment"
++    fi
++    if [[ -z "${DEVSPACE_CONFIG_JSON:-}" ]] && [[ -z "${DEVSPACE_PUBLIC_BASE_URL:-}" ]] \
++      && ! grep -Eq '"publicBaseUrl"[[:space:]]*:[[:space:]]*"[^"]' "${CONFIG_PATH}" 2>/dev/null; then
++      log "note: DEVSPACE_PUBLIC_BASE_URL is not set, so OAuth discovery advertises the container-local address"
++      log "      Set it to the public URL your MCP clients use, for example https://devspace.example.com"
 +    fi
 +    ;;
 +esac

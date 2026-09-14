@@ -26,8 +26,18 @@ contains only patchset metadata, and the buildable source lives on the generated
   `/data` as a volume, ships `git`, `ripgrep`, `bubblewrap`, and `socat`, and
   exposes `7676` with a `/healthz` check.
 - `0002-docs-docker-document-container-deployment.patch` adds
-  `docker/README.md` and `docker/compose.yaml` describing tags, configuration
-  variables, volumes, permissions, and tunnel expectations.
+  `docker/README.md`, `docker/compose.yaml`, `docker/compose.tunnel.yaml`, and
+  `docker/env.example` describing tags, configuration, volumes, permissions,
+  the container OAuth flow, and tunnel expectations.
+- `0003-feat-docker-mount-a-real-config.jsonc-in-the-compose.patch` makes the
+  durable `config.jsonc` first-class in the compose examples: the host config
+  directory is mounted at `/data/config`, `docker/config.example.jsonc` is a
+  commented starting point, and the entrypoint reports when
+  `server.publicBaseUrl` is missing or ignored by an existing file.
+- `0004-feat-docker-install-agent-CLIs-on-request.patch` installs
+  command-provider agent CLIs (`codex`, `claude`, `copilot`, `opencode`, `pi`)
+  into the data volume when `DEVSPACE_AGENTS` asks for them, puts that prefix on
+  `PATH` ahead of the image binaries, and leaves SDK-backed providers untouched.
 
 The series contains no upstream source behavior changes yet; the patches only
 add `docker/` plus `.dockerignore` to the upstream tree.

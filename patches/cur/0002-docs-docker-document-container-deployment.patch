@@ -6,10 +6,10 @@ Subject: [PATCH] docs(docker): document container deployment
 
 diff --git a/docker/README.md b/docker/README.md
 new file mode 100644
-index 0000000..c967357
+index 0000000..697893a
 --- /dev/null
 +++ b/docker/README.md
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,206 @@
 +# Running DevSpace in Docker
 +
 +The DevSpace image runs the MCP server on a machine that does not have Node
@@ -79,6 +79,29 @@ index 0000000..c967357
 +```bash
 +docker compose -f docker/compose.tunnel.yaml up -d
 +```
++
++## Connecting an MCP client
++
++DevSpace authenticates clients with OAuth, so the container has to know the URL
++clients actually use:
++
++- Point clients at the `/mcp` path of the public URL, for example
++  `https://devspace.example.com/mcp`.
++- Set `DEVSPACE_PUBLIC_BASE_URL` to that same public URL. It is the OAuth
++  issuer, so a mismatch leaves clients discovering `http://127.0.0.1:7676/...`
++  and reporting that the server does not implement OAuth.
++- The first connection opens an Owner password approval page. Enter the value of
++  `DEVSPACE_OAUTH_OWNER_TOKEN`.
++- Registered clients and issued tokens live under `/data`, so they survive
++  container restarts.
++
++Discovery answers at both well-known forms, so clients that probe
++`/.well-known/oauth-protected-resource` and clients that probe
++`/.well-known/oauth-protected-resource/mcp` both find the metadata.
++
++Clients other than ChatGPT may finish the flow on a redirect host that is not
++allowed by default. Add it with `DEVSPACE_OAUTH_ALLOWED_REDIRECT_HOSTS`; the
++default list is `chatgpt.com,localhost,127.0.0.1`.
 +
 +## Image tags
 +

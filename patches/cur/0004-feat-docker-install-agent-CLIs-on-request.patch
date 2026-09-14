@@ -1,0 +1,231 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patch-ci <ci@localhost>
+Date: Mon, 14 Sep 2026 14:50:10 +0000
+Subject: [PATCH] feat(docker): install agent CLIs on request
+
+
+diff --git a/docker/Dockerfile b/docker/Dockerfile
+index 88178a9..c01b075 100644
+--- a/docker/Dockerfile
++++ b/docker/Dockerfile
+@@ -58,10 +58,12 @@ LABEL org.opencontainers.image.title="DevSpace" \
+       org.opencontainers.image.revision="${DEVSPACE_SOURCE_SHA}" \
+       io.ovlerfork.devspace.upstream.revision="${DEVSPACE_UPSTREAM_SHA}"
+ 
++# Agent CLIs installed at runtime by the entrypoint live in the data volume, so
++# put that prefix ahead of the image's own binaries on PATH.
+ ENV NODE_ENV=production \
+     DEVSPACE_CONFIG_DIR=/data/config \
+     HOME=/data/home \
+-    PATH=/opt/devspace/bin:${PATH}
++    PATH=/data/agents/bin:/opt/devspace/bin:${PATH}
+ 
+ RUN set -eux; \
+     apt-get update; \
+diff --git a/docker/README.md b/docker/README.md
+index 353fc93..0a3409b 100644
+--- a/docker/README.md
++++ b/docker/README.md
+@@ -104,6 +104,45 @@ Clients other than ChatGPT may finish the flow on a redirect host that is not
+ allowed by default. Add it with `DEVSPACE_OAUTH_ALLOWED_REDIRECT_HOSTS`; the
+ default list is `chatgpt.com,localhost,127.0.0.1`.
+ 
++## Subagents and agent CLIs
++
++DevSpace can delegate work to local coding agents. The container splits them in
++two:
++
++| Provider | Needs | Notes |
++| --- | --- | --- |
++| `claude`, `opencode`, `pi` | nothing | DevSpace talks to the SDKs shipped in the image. |
++| `codex`, `copilot` | a CLI on `PATH` | Install it with `DEVSPACE_AGENTS`. |
++
++`DEVSPACE_AGENTS` installs those CLIs into `/data/agents` on start and puts the
++prefix on `PATH`, so they survive container recreation and image updates:
++
++```bash
++DEVSPACE_AGENTS=codex docker compose -f docker/compose.yaml up -d
++DEVSPACE_AGENTS=codex@0.154.0,copilot docker compose -f docker/compose.yaml up -d
++```
++
++Restarts skip agents that are already installed. Remove `/data/agents` from the
++volume to force a reinstall or to move a floating version forward. Credentials
++live under `HOME` (`/data/home`), so sign in once:
++
++```bash
++docker compose exec -it devspace codex login
++```
++
++DevSpace only delegates to providers enabled in `config.jsonc`:
++
++```jsonc
++"subagents": {
++  "enabled": true,
++  "providers": [{ "id": "codex", "enabled": true }]
++}
++```
++
++The image installs no agent by default. Unknown names in `DEVSPACE_AGENTS` are
++reported and skipped, and a failed install leaves the server running with that
++provider unavailable.
++
+ ## Image tags
+ 
+ | Tag | Source |
+@@ -150,8 +189,15 @@ docker compose exec devspace devspace config set publicBaseUrl https://devspace.
+ 
+ The environment variables below are a convenience for deployments that prefer
+ them: the entrypoint writes `config.jsonc` from the environment only when the
+-file does not exist yet, so a mounted or edited file always wins. Setting
+-`DEVSPACE_CONFIG_JSON` replaces the file on every start.
++file does not exist yet, so a mounted or edited file always wins.
++
++Container-only variables that never reach `config.jsonc`:
++
++| Variable | Purpose |
++| --- | --- |
++| `DEVSPACE_CONFIG_JSON` | Replaces `config.jsonc` on every start. |
++| `DEVSPACE_AGENTS` | Command-provider CLIs to install into `/data/agents` on start. |
++| `DEVSPACE_AGENT_PREFIX` | Install prefix for those CLIs; defaults to `/data/agents`. |
+ 
+ | Variable | Config key | Default |
+ | --- | --- | --- |
+diff --git a/docker/compose.tunnel.yaml b/docker/compose.tunnel.yaml
+index 475559f..85a3681 100644
+--- a/docker/compose.tunnel.yaml
++++ b/docker/compose.tunnel.yaml
+@@ -38,6 +38,10 @@ services:
+       DEVSPACE_WIDGETS: ${DEVSPACE_WIDGETS:-true}
+       DEVSPACE_LOG_LEVEL: ${DEVSPACE_LOG_LEVEL:-info}
+       DEVSPACE_LOG_FORMAT: ${DEVSPACE_LOG_FORMAT:-json}
++      # Command-provider CLIs to install into /data/agents on start, for example
++      # "codex" or "codex@0.154.0,copilot". The bundled SDK providers (claude,
++      # opencode, pi) need nothing. See docker/README.md.
++      DEVSPACE_AGENTS: ${DEVSPACE_AGENTS:-}
+     volumes:
+       - devspace-data:/data
+       # Durable settings, skills, and agent profiles. See
+diff --git a/docker/compose.yaml b/docker/compose.yaml
+index 7d0090e..2bca794 100644
+--- a/docker/compose.yaml
++++ b/docker/compose.yaml
+@@ -30,6 +30,10 @@ services:
+       DEVSPACE_WIDGETS: ${DEVSPACE_WIDGETS:-true}
+       DEVSPACE_LOG_LEVEL: ${DEVSPACE_LOG_LEVEL:-info}
+       DEVSPACE_LOG_FORMAT: ${DEVSPACE_LOG_FORMAT:-json}
++      # Command-provider CLIs to install into /data/agents on start, for example
++      # "codex" or "codex@0.154.0,copilot". The bundled SDK providers (claude,
++      # opencode, pi) need nothing. See docker/README.md.
++      DEVSPACE_AGENTS: ${DEVSPACE_AGENTS:-}
+     volumes:
+       - devspace-data:/data
+       # Durable settings, skills, and agent profiles. See
+diff --git a/docker/config.example.jsonc b/docker/config.example.jsonc
+index 26b4f87..ce3444c 100644
+--- a/docker/config.example.jsonc
++++ b/docker/config.example.jsonc
+@@ -58,6 +58,12 @@
+     "agentDir": "~/.codex"
+   },
+   "subagents": {
++    // Enable the providers DevSpace may delegate to, and install their CLIs
++    // with DEVSPACE_AGENTS (see docker/README.md):
++    //   "providers": [
++    //     { "id": "codex", "enabled": true },
++    //     { "id": "claude", "enabled": true }
++    //   ]
+     "enabled": false,
+     "instructions": "on-demand",
+     "providers": []
+diff --git a/docker/entrypoint.sh b/docker/entrypoint.sh
+index d0e65d2..1325ea5 100644
+--- a/docker/entrypoint.sh
++++ b/docker/entrypoint.sh
+@@ -15,6 +15,61 @@ log() {
+   printf 'devspace-entrypoint: %s\n' "$*" >&2
+ }
+ 
++AGENT_PREFIX="${DEVSPACE_AGENT_PREFIX:-/data/agents}"
++export PATH="${AGENT_PREFIX}/bin:${PATH}"
++
++agent_package() {
++  case "$1" in
++    codex) printf '%s' "@openai/codex" ;;
++    claude) printf '%s' "@anthropic-ai/claude-code" ;;
++    copilot) printf '%s' "@github/copilot" ;;
++    opencode) printf '%s' "opencode-ai" ;;
++    pi) printf '%s' "@earendil-works/pi-coding-agent" ;;
++    *) return 1 ;;
++  esac
++}
++
++# DevSpace talks to claude, opencode, and pi through SDKs that ship in the
++# image; command providers such as codex and copilot need a CLI on PATH. These
++# installs land in the data volume so they survive container recreation.
++install_agents() {
++  local requested="${DEVSPACE_AGENTS:-}"
++  if [[ -z "${requested//[[:space:],]/}" ]]; then
++    return 0
++  fi
++  if ! command -v npm >/dev/null 2>&1; then
++    log "[agents] DEVSPACE_AGENTS is set, but npm is not available in this image"
++    return 0
++  fi
++  mkdir -p "${AGENT_PREFIX}"
++  local entry name version package spec
++  for entry in ${requested//,/ }; do
++    name="${entry%@*}"
++    version=""
++    if [[ "${entry}" == *@* ]]; then
++      version="${entry#*@}"
++    fi
++    if ! package="$(agent_package "${name}")"; then
++      log "[agents] unknown agent ${name}; supported: codex, claude, copilot, opencode, pi"
++      continue
++    fi
++    if command -v "${name}" >/dev/null 2>&1; then
++      log "[agents] ${name} is already available at $(command -v "${name}")"
++      continue
++    fi
++    spec="${package}"
++    if [[ -n "${version}" ]]; then
++      spec="${package}@${version}"
++    fi
++    log "[agents] installing ${spec} into ${AGENT_PREFIX}"
++    if npm install --global --prefix "${AGENT_PREFIX}" --no-fund --no-audit "${spec}"; then
++      log "[agents] installed ${name} at $(command -v "${name}")"
++    else
++      log "[agents] failed to install ${spec}; ${name} stays unavailable"
++    fi
++  done
++}
++
+ if [[ $# -eq 0 ]]; then
+   set -- serve
+ fi
+@@ -56,6 +111,8 @@ case "$1" in
+         log "      Set it to the public URL your MCP clients use, for example https://devspace.example.com"
+       fi
+     fi
++
++    install_agents
+     ;;
+ esac
+ 
+diff --git a/docker/env.example b/docker/env.example
+index da00820..0dd31fe 100644
+--- a/docker/env.example
++++ b/docker/env.example
+@@ -30,6 +30,12 @@ DEVSPACE_PROJECTS_DIR=$HOME/projects
+ # Image channel: :latest (newest upstream release), :prerelease (newest
+ # prerelease), or :dev (upstream main plus this fork's patches).
+ # DEVSPACE_IMAGE=ghcr.io/ovlerfork/devspace:latest
++
++# Command-provider agent CLIs to install into /data/agents on start, comma
++# separated, optionally pinned with name@version. Names: codex, claude,
++# copilot, opencode, pi. The bundled SDK providers (claude, opencode, pi) need
++# nothing; codex and copilot need a CLI. See docker/README.md.
++# DEVSPACE_AGENTS=codex
+ # DEVSPACE_ALLOWED_ROOTS=/workspaces
+ # DEVSPACE_TOOL_MODE=codex
+ # DEVSPACE_WIDGETS=true

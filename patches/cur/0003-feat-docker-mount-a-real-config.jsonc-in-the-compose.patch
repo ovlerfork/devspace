@@ -1,0 +1,370 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: patch-ci <ci@localhost>
+Date: Mon, 14 Sep 2026 14:48:48 +0000
+Subject: [PATCH] feat(docker): mount a real config.jsonc in the compose
+ examples
+
+
+diff --git a/docker/README.md b/docker/README.md
+index 697893a..353fc93 100644
+--- a/docker/README.md
++++ b/docker/README.md
+@@ -12,13 +12,16 @@ for the server process, not a sandbox for the mounted projects.
+ ## Quick start
+ 
+ ```bash
++mkdir -p ./devspace/config
++cp docker/config.example.jsonc ./devspace/config/config.jsonc
++$EDITOR ./devspace/config/config.jsonc   # set server.publicBaseUrl for your tunnel
++
+ docker run -d --name devspace \
+   --restart unless-stopped \
+   -p 127.0.0.1:7676:7676 \
+   -e DEVSPACE_OAUTH_OWNER_TOKEN="$(openssl rand -hex 32)" \
+-  -e DEVSPACE_ALLOWED_ROOTS=/workspaces \
+-  -e DEVSPACE_PUBLIC_BASE_URL=https://devspace.example.com \
+   -v devspace-data:/data \
++  -v "$PWD/devspace/config:/data/config" \
+   -v /home/me/projects:/workspaces \
+   ghcr.io/ovlerfork/devspace:latest
+ ```
+@@ -32,9 +35,9 @@ Then expose `127.0.0.1:7676` through a tunnel you control and point the MCP
+ client at `https://devspace.example.com/mcp`. Tunnel lifecycle and credentials
+ stay with you; the container only serves HTTP.
+ 
+-`DEVSPACE_PUBLIC_BASE_URL` is optional, but set it whenever DevSpace is reached
+-through a public hostname. DevSpace derives the inbound `Host` allowlist from it,
+-so tunnel hostnames work without extra configuration.
++`server.publicBaseUrl` is the one setting a tunnel deployment must get right:
++DevSpace derives the inbound `Host` allowlist and its OAuth issuer from it, and
++the entrypoint logs a note when it is missing.
+ 
+ Check that the server is up:
+ 
+@@ -56,7 +59,10 @@ Copy `docker/env.example` to `docker/.env` so the values live next to the
+ compose file (Compose reads that file automatically), then:
+ 
+ ```bash
+-openssl rand -hex 32   # put the result in DEVSPACE_OAUTH_OWNER_TOKEN
++mkdir -p docker/config
++cp docker/config.example.jsonc docker/config/config.jsonc
++$EDITOR docker/config/config.jsonc   # set server.publicBaseUrl for your tunnel
++openssl rand -hex 32                 # put the result in DEVSPACE_OAUTH_OWNER_TOKEN
+ docker compose -f docker/compose.yaml up -d
+ ```
+ 
+@@ -75,17 +81,24 @@ clients actually use:
+ 
+ - Point clients at the `/mcp` path of the public URL, for example
+   `https://devspace.example.com/mcp`.
+-- Set `DEVSPACE_PUBLIC_BASE_URL` to that same public URL. It is the OAuth
+-  issuer, so a mismatch leaves clients discovering `http://127.0.0.1:7676/...`
+-  and reporting that the server does not implement OAuth.
++- Set `server.publicBaseUrl` in `config.jsonc` to that same public URL (or
++  `DEVSPACE_PUBLIC_BASE_URL` before the first start). It is the OAuth issuer,
++  so a mismatch leaves clients discovering `http://127.0.0.1:7676/...` and
++  reporting that the server does not implement OAuth.
+ - The first connection opens an Owner password approval page. Enter the value of
+   `DEVSPACE_OAUTH_OWNER_TOKEN`.
+ - Registered clients and issued tokens live under `/data`, so they survive
+   container restarts.
+ 
+-Discovery answers at both well-known forms, so clients that probe
+-`/.well-known/oauth-protected-resource` and clients that probe
+-`/.well-known/oauth-protected-resource/mcp` both find the metadata.
++The unauthenticated `401` for `/mcp` advertises
++`https://<public-host>/.well-known/oauth-protected-resource/mcp` in its
++`WWW-Authenticate` header, which is where a spec-following client starts
++discovery. Check it directly when a client reports that the server does not
++implement OAuth:
++
++```bash
++curl -si https://devspace.example.com/mcp | grep -i www-authenticate
++```
+ 
+ Clients other than ChatGPT may finish the flow on a redirect host that is not
+ allowed by default. Add it with `DEVSPACE_OAUTH_ALLOWED_REDIRECT_HOSTS`; the
+@@ -112,10 +125,33 @@ labels.
+ 
+ ## Configuration
+ 
+-The first `serve` start writes `${DEVSPACE_CONFIG_DIR}/config.jsonc` from the
+-environment below and keeps it in the `/data` volume afterwards. DevSpace reads
+-the file directly; the environment is a container convenience for deployments
+-that prefer environment variables.
++DevSpace reads one durable configuration document, `config.jsonc`, from
++`${DEVSPACE_CONFIG_DIR}` (`/data/config` in the image). It accepts comments and
++trailing commas, is validated before the server starts, and is edited by
++`devspace config set` without losing comments. The owner secret is kept out of
++it: pass `DEVSPACE_OAUTH_OWNER_TOKEN` or let `devspace init` write `auth.json`
++next to the file.
++
++The compose examples mount a host directory at `/data/config`. Start from the
++commented example:
++
++```bash
++mkdir -p docker/config
++cp docker/config.example.jsonc docker/config/config.jsonc
++$EDITOR docker/config/config.jsonc   # set server.publicBaseUrl for tunnels
++```
++
++Skills and agent profiles placed in that directory persist with it. Change one
++value without leaving Docker:
++
++```bash
++docker compose exec devspace devspace config set publicBaseUrl https://devspace.example.com
++```
++
++The environment variables below are a convenience for deployments that prefer
++them: the entrypoint writes `config.jsonc` from the environment only when the
++file does not exist yet, so a mounted or edited file always wins. Setting
++`DEVSPACE_CONFIG_JSON` replaces the file on every start.
+ 
+ | Variable | Config key | Default |
+ | --- | --- | --- |
+diff --git a/docker/compose.tunnel.yaml b/docker/compose.tunnel.yaml
+index a2de5cf..475559f 100644
+--- a/docker/compose.tunnel.yaml
++++ b/docker/compose.tunnel.yaml
+@@ -5,8 +5,11 @@
+ # `http://devspace:7676` in the tunnel's ingress rules. DevSpace neither
+ # creates nor manages the tunnel; it only serves HTTP on the compose network.
+ #
+-#   1. Generate an owner token:  openssl rand -hex 32
+-#   2. Run with the tunnel token and the public hostname that tunnel serves:
++#   1. Provide durable settings, including the hostname the tunnel serves:
++#        mkdir -p docker/config
++#        cp docker/config.example.jsonc docker/config/config.jsonc
++#   2. Generate an owner token:  openssl rand -hex 32
++#   3. Run with the tunnel token and the public hostname that tunnel serves:
+ #        DEVSPACE_OAUTH_OWNER_TOKEN=<token> \
+ #        CLOUDFLARE_TUNNEL_TOKEN=<tunnel-token> \
+ #        DEVSPACE_PROJECTS_DIR="$HOME/projects" \
+@@ -14,7 +17,8 @@
+ #        docker compose -f docker/compose.tunnel.yaml up -d
+ #
+ # Nothing is published on the host: the tunnel reaches the container over the
+-# compose network, so `127.0.0.1:7676` stays closed.
++# compose network, so `127.0.0.1:7676` stays closed. Environment variables here
++# seed `docker/config/config.jsonc` on first start; the file wins afterwards.
+ 
+ services:
+   devspace:
+@@ -25,18 +29,24 @@ services:
+     environment:
+       DEVSPACE_OAUTH_OWNER_TOKEN: "${DEVSPACE_OAUTH_OWNER_TOKEN:?set a random token, for example: openssl rand -hex 32}"
+       DEVSPACE_ALLOWED_ROOTS: ${DEVSPACE_ALLOWED_ROOTS:-/workspaces}
+-      # Must match the hostname the tunnel serves; DevSpace derives its inbound
+-      # Host allowlist from this value.
+-      DEVSPACE_PUBLIC_BASE_URL: "${DEVSPACE_PUBLIC_BASE_URL:?set the tunnel hostname, for example: https://devspace.example.com}"
++      # Seeds server.publicBaseUrl when config.jsonc does not exist yet; the
++      # mounted config file stays authoritative afterwards. It must match the
++      # hostname the tunnel serves, because DevSpace derives its OAuth issuer
++      # and inbound Host allowlist from it.
++      DEVSPACE_PUBLIC_BASE_URL: ${DEVSPACE_PUBLIC_BASE_URL:-}
+       DEVSPACE_TOOL_MODE: ${DEVSPACE_TOOL_MODE:-codex}
+       DEVSPACE_WIDGETS: ${DEVSPACE_WIDGETS:-true}
+       DEVSPACE_LOG_LEVEL: ${DEVSPACE_LOG_LEVEL:-info}
+       DEVSPACE_LOG_FORMAT: ${DEVSPACE_LOG_FORMAT:-json}
+     volumes:
+       - devspace-data:/data
++      # Durable settings, skills, and agent profiles. See
++      # docker/config.example.jsonc. Set DEVSPACE_CONFIG_DIR_HOST to an absolute
++      # path when the stack runs without this compose file's directory.
++      - ${DEVSPACE_CONFIG_DIR_HOST:-./config}:/data/config
+       - "${DEVSPACE_PROJECTS_DIR:?set the host directory to expose}:/workspaces"
+-    # The container serves as uid 1000 by default. When the mounted projects
+-    # belong to another account, match it here:
++    # The container serves as uid 1000 by default. When the mounted projects or
++    # config directory belong to another account, match it here:
+     # user: "1001:1001"
+ 
+   tunnel:
+diff --git a/docker/compose.yaml b/docker/compose.yaml
+index 321da0f..7d0090e 100644
+--- a/docker/compose.yaml
++++ b/docker/compose.yaml
+@@ -1,13 +1,16 @@
+ # DevSpace container deployment.
+ #
+-#   1. Generate an owner token:  openssl rand -hex 32
+-#   2. Export it and the projects directory you want to expose:
++#   1. Provide durable settings, including the public URL behind a tunnel:
++#        mkdir -p docker/config
++#        cp docker/config.example.jsonc docker/config/config.jsonc
++#   2. Generate an owner token:  openssl rand -hex 32
++#   3. Export it and the projects directory you want to expose:
+ #        DEVSPACE_OAUTH_OWNER_TOKEN=... DEVSPACE_PROJECTS_DIR=~/projects docker compose up -d
+-#   3. Expose 127.0.0.1:7676 through the tunnel you control.
++#   4. Expose 127.0.0.1:7676 through the tunnel you control.
+ #
+-# The container writes config.jsonc, state, and worktrees into the
+-# `devspace-data` volume. Environment variables configure the first start;
+-# later changes need `DEVSPACE_CONFIG_JSON` or an edited config.jsonc.
++# `docker/config/config.jsonc` is the file DevSpace reads. Environment variables
++# only seed it when it is missing. State and worktrees stay in the
++# `devspace-data` volume.
+ 
+ services:
+   devspace:
+@@ -29,9 +32,13 @@ services:
+       DEVSPACE_LOG_FORMAT: ${DEVSPACE_LOG_FORMAT:-json}
+     volumes:
+       - devspace-data:/data
++      # Durable settings, skills, and agent profiles. See
++      # docker/config.example.jsonc. Set DEVSPACE_CONFIG_DIR_HOST to an absolute
++      # path when the stack runs without this compose file's directory.
++      - ${DEVSPACE_CONFIG_DIR_HOST:-./config}:/data/config
+       - "${DEVSPACE_PROJECTS_DIR:?set the host directory to expose}:/workspaces"
+-    # The container serves as uid 1000 by default. When the mounted projects
+-    # belong to another account, match it here:
++    # The container serves as uid 1000 by default. When the mounted projects or
++    # config directory belong to another account, match it here:
+     # user: "1001:1001"
+ 
+ volumes:
+diff --git a/docker/config.example.jsonc b/docker/config.example.jsonc
+new file mode 100644
+index 0000000..26b4f87
+--- /dev/null
++++ b/docker/config.example.jsonc
+@@ -0,0 +1,82 @@
++// DevSpace durable configuration.
++//
++// Copy this file into the directory the compose examples mount as
++// /data/config, then edit it:
++//
++//   mkdir -p docker/config
++//   cp docker/config.example.jsonc docker/config/config.jsonc
++//
++// DevSpace validates this document before it starts, accepts comments and
++// trailing commas, and `devspace config set <key> <value>` edits it without
++// discarding them. `$schema` points at the versioned JSON Schema for editor
++// completion. The owner secret is not stored here: pass it with
++// DEVSPACE_OAUTH_OWNER_TOKEN or let `devspace init` write auth.json next to
++// this file.
++{
++  "$schema": "https://raw.githubusercontent.com/Waishnav/devspace/main/schema/v1/devspace.schema.json",
++  "configVersion": 1,
++  "server": {
++    // Listen inside the container. The compose examples publish port 7676, or
++    // keep it closed and let a tunnel reach the container directly.
++    "host": "0.0.0.0",
++    "port": 7676,
++    // Public URL that MCP clients use. OAuth discovery advertises this value,
++    // so leave it null only while clients reach DevSpace on localhost. Behind
++    // a tunnel, set it to the public hostname:
++    //   "publicBaseUrl": "https://devspace.example.com"
++    "publicBaseUrl": null,
++    // Additional Host headers to accept. The public hostname above and
++    // localhost are allowed automatically.
++    "allowedHosts": [],
++    // Enable when a trusted proxy terminates TLS in front of DevSpace.
++    "trustProxy": false
++  },
++  "workspaces": {
++    // Directories inside the container that clients may open as workspaces.
++    "allowedRoots": ["/workspaces"],
++    "worktreeRoot": "/data/worktrees"
++  },
++  "storage": {
++    "stateDir": "/data/state"
++  },
++  "tools": {
++    // "codex" or "claude".
++    "mode": "codex"
++  },
++  "ui": {
++    "enabled": true
++  },
++  "artifacts": {
++    "enabled": false,
++    "maxFileBytes": 104857600
++  },
++  "skills": {
++    "enabled": true,
++    // Extra skill directories. Skills and agent profiles placed in this config
++    // directory persist in the mounted volume.
++    "paths": [],
++    "agentDir": "~/.codex"
++  },
++  "subagents": {
++    "enabled": false,
++    "instructions": "on-demand",
++    "providers": []
++  },
++  "logging": {
++    "level": "info",
++    "format": "json",
++    "requests": true,
++    "assets": false,
++    "toolCalls": true,
++    "shellCommands": false
++  },
++  "oauth": {
++    "accessTokenTtlSeconds": 3600,
++    "refreshTokenTtlSeconds": 2592000,
++    "scopes": ["devspace"],
++    "allowedResourceUrls": [],
++    // Hosts a client may use to receive the authorization redirect. The
++    // defaults cover ChatGPT and clients that finish on loopback.
++    "allowedRedirectHosts": ["chatgpt.com", "localhost", "127.0.0.1"]
++  }
++}
+diff --git a/docker/entrypoint.sh b/docker/entrypoint.sh
+index f5cc39f..d0e65d2 100644
+--- a/docker/entrypoint.sh
++++ b/docker/entrypoint.sh
+@@ -43,10 +43,18 @@ case "$1" in
+       chmod 0600 "${CONFIG_PATH}"
+       log "created ${CONFIG_PATH} from the container environment"
+     fi
+-    if [[ -z "${DEVSPACE_CONFIG_JSON:-}" ]] && [[ -z "${DEVSPACE_PUBLIC_BASE_URL:-}" ]] \
+-      && ! grep -Eq '"publicBaseUrl"[[:space:]]*:[[:space:]]*"[^"]' "${CONFIG_PATH}" 2>/dev/null; then
+-      log "note: DEVSPACE_PUBLIC_BASE_URL is not set, so OAuth discovery advertises the container-local address"
+-      log "      Set it to the public URL your MCP clients use, for example https://devspace.example.com"
++
++    # Ask DevSpace for the effective value instead of parsing JSONC here.
++    effective_public_base_url="$(DEVSPACE_CONFIG_DIR="${CONFIG_DIR}" devspace config get 2>/dev/null \
++      | jq -r '.server.publicBaseUrl // ""' 2>/dev/null || true)"
++    if [[ -z "${effective_public_base_url}" ]]; then
++      if [[ -n "${DEVSPACE_PUBLIC_BASE_URL:-}" ]]; then
++        log "note: ${CONFIG_PATH} exists without server.publicBaseUrl, so DEVSPACE_PUBLIC_BASE_URL is ignored"
++        log "      Run: devspace config set publicBaseUrl ${DEVSPACE_PUBLIC_BASE_URL}"
++      else
++        log "note: server.publicBaseUrl is unset, so OAuth discovery advertises the container-local address"
++        log "      Set it to the public URL your MCP clients use, for example https://devspace.example.com"
++      fi
+     fi
+     ;;
+ esac
+diff --git a/docker/env.example b/docker/env.example
+index 2d4dc85..da00820 100644
+--- a/docker/env.example
++++ b/docker/env.example
+@@ -3,6 +3,13 @@
+ # Copy this file to docker/.env and fill in the values; Docker Compose reads a
+ # `.env` file from the compose file's directory automatically.
+ 
++# Host directory mounted as /data/config. DevSpace reads config.jsonc from
++# there; start from docker/config.example.jsonc. The variables below only seed
++# that file when it does not exist yet, so edit the file for later changes. Use
++# an absolute path when the stack runs outside this directory, for example in
++# Portainer.
++# DEVSPACE_CONFIG_DIR_HOST=./config
++
+ # Owner secret created by `devspace init` on a local install, or any random
+ # value of at least 16 characters. Generate one with: openssl rand -hex 32
+ DEVSPACE_OAUTH_OWNER_TOKEN=
+@@ -10,8 +17,9 @@ DEVSPACE_OAUTH_OWNER_TOKEN=
+ # Host directory that is mounted as /workspaces inside the container.
+ DEVSPACE_PROJECTS_DIR=$HOME/projects
+ 
+-# Public hostname served by the tunnel that forwards to this container. Set it
+-# whenever DevSpace is reached through anything other than localhost.
++# Public hostname served by the tunnel that forwards to this container. Seeds
++# server.publicBaseUrl on first start; set it whenever DevSpace is reached
++# through anything other than localhost, because OAuth discovery advertises it.
+ # DEVSPACE_PUBLIC_BASE_URL=https://devspace.example.com
+ 
+ # Host address the container port is published on. Keep loopback and let the
