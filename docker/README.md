@@ -104,6 +104,45 @@ Clients other than ChatGPT may finish the flow on a redirect host that is not
 allowed by default. Add it with `DEVSPACE_OAUTH_ALLOWED_REDIRECT_HOSTS`; the
 default list is `chatgpt.com,localhost,127.0.0.1`.
 
+## Subagents and agent CLIs
+
+DevSpace can delegate work to local coding agents. The container splits them in
+two:
+
+| Provider | Needs | Notes |
+| --- | --- | --- |
+| `claude`, `opencode`, `pi` | nothing | DevSpace talks to the SDKs shipped in the image. |
+| `codex`, `copilot` | a CLI on `PATH` | Install it with `DEVSPACE_AGENTS`. |
+
+`DEVSPACE_AGENTS` installs those CLIs into `/data/agents` on start and puts the
+prefix on `PATH`, so they survive container recreation and image updates:
+
+```bash
+DEVSPACE_AGENTS=codex docker compose -f docker/compose.yaml up -d
+DEVSPACE_AGENTS=codex@0.154.0,copilot docker compose -f docker/compose.yaml up -d
+```
+
+Restarts skip agents that are already installed. Remove `/data/agents` from the
+volume to force a reinstall or to move a floating version forward. Credentials
+live under `HOME` (`/data/home`), so sign in once:
+
+```bash
+docker compose exec -it devspace codex login
+```
+
+DevSpace only delegates to providers enabled in `config.jsonc`:
+
+```jsonc
+"subagents": {
+  "enabled": true,
+  "providers": [{ "id": "codex", "enabled": true }]
+}
+```
+
+The image installs no agent by default. Unknown names in `DEVSPACE_AGENTS` are
+reported and skipped, and a failed install leaves the server running with that
+provider unavailable.
+
 ## Image tags
 
 | Tag | Source |
@@ -150,8 +189,15 @@ docker compose exec devspace devspace config set publicBaseUrl https://devspace.
 
 The environment variables below are a convenience for deployments that prefer
 them: the entrypoint writes `config.jsonc` from the environment only when the
-file does not exist yet, so a mounted or edited file always wins. Setting
-`DEVSPACE_CONFIG_JSON` replaces the file on every start.
+file does not exist yet, so a mounted or edited file always wins.
+
+Container-only variables that never reach `config.jsonc`:
+
+| Variable | Purpose |
+| --- | --- |
+| `DEVSPACE_CONFIG_JSON` | Replaces `config.jsonc` on every start. |
+| `DEVSPACE_AGENTS` | Command-provider CLIs to install into `/data/agents` on start. |
+| `DEVSPACE_AGENT_PREFIX` | Install prefix for those CLIs; defaults to `/data/agents`. |
 
 | Variable | Config key | Default |
 | --- | --- | --- |

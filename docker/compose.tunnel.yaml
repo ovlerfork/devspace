@@ -38,6 +38,10 @@ services:
       DEVSPACE_WIDGETS: ${DEVSPACE_WIDGETS:-true}
       DEVSPACE_LOG_LEVEL: ${DEVSPACE_LOG_LEVEL:-info}
       DEVSPACE_LOG_FORMAT: ${DEVSPACE_LOG_FORMAT:-json}
+      # Command-provider CLIs to install into /data/agents on start, for example
+      # "codex" or "codex@0.154.0,copilot". The bundled SDK providers (claude,
+      # opencode, pi) need nothing. See docker/README.md.
+      DEVSPACE_AGENTS: ${DEVSPACE_AGENTS:-}
     volumes:
       - devspace-data:/data
       # Durable settings, skills, and agent profiles. See
