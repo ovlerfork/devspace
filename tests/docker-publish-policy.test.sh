@@ -23,9 +23,9 @@ assert_equals $'ghcr.io/example/devspace:dev\nghcr.io/example/devspace:dev-01234
   "$(docker_publish_tags "${IMAGE_BASE}" dev "${VERSION}" "${PRE_SANITIZATION_SHA}" "${UPSTREAM_SHA}")" \
   "dev tags move with the upstream SHA"
 
-assert_equals $'ghcr.io/example/devspace:prerelease\nghcr.io/example/devspace:prerelease-a1b2c3d\nghcr.io/example/devspace:1.2.3\nghcr.io/example/devspace:1.2.3-a1b2c3d' \
+assert_equals $'ghcr.io/example/devspace:latest\nghcr.io/example/devspace:prerelease\nghcr.io/example/devspace:prerelease-a1b2c3d\nghcr.io/example/devspace:1.2.3\nghcr.io/example/devspace:1.2.3-a1b2c3d' \
   "$(docker_publish_tags "${IMAGE_BASE}" prerelease "${VERSION}" "${PRE_SANITIZATION_SHA}" "${UPSTREAM_SHA}")" \
-  "prerelease tags keep the pre-sanitization source SHA and never move latest"
+  "prerelease tags move latest and keep the pre-sanitization source SHA"
 
 assert_equals $'ghcr.io/example/devspace:latest\nghcr.io/example/devspace:1.2.3\nghcr.io/example/devspace:1.2.3-a1b2c3d' \
   "$(docker_publish_tags "${IMAGE_BASE}" release "${VERSION}" "${PRE_SANITIZATION_SHA}" "${UPSTREAM_SHA}")" \

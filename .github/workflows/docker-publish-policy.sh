@@ -15,7 +15,10 @@ docker_publish_tags() {
       printf '%s\n%s\n' "${image_base}:dev" "${image_base}:dev-${upstream_sha}"
       ;;
     prerelease)
-      printf '%s\n%s\n%s\n%s\n' \
+      # `latest` follows the newest published upstream release, which is a
+      # prerelease while upstream is on a prerelease line.
+      printf '%s\n%s\n%s\n%s\n%s\n' \
+        "${image_base}:latest" \
         "${image_base}:prerelease" \
         "${image_base}:prerelease-${source_sha}" \
         "${image_base}:${resolved_version}" \

@@ -39,15 +39,15 @@ source and publishes:
 
 | Tag | Source |
 | --- | --- |
-| `latest` | Newest published stable upstream release. |
+| `latest` | Newest published upstream release. While upstream is on a prerelease line, that release is a prerelease. |
 | `<version>`, `<version>-<source-sha>` | Upstream release, tagged with the patched source revision. |
 | `prerelease`, `prerelease-<source-sha>` | Newest published prerelease. |
 | `dev`, `dev-<upstream-sha>` | Upstream `main` plus the current patches. |
 
-Scheduled runs resolve the newest published upstream release and move
-`latest` or `prerelease` accordingly. Manual dispatches choose a channel and
-always rebuild. The image documentation is in `docker/README.md` on the
-`patched` branch.
+Scheduled runs resolve the newest published upstream release and move `latest`
+along with the `prerelease` or release version tags. Manual dispatches choose a
+channel and always rebuild. The image documentation is in `docker/README.md` on
+the `patched` branch.
 
 ## Apply locally
 

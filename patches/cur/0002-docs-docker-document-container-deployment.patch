@@ -6,10 +6,10 @@ Subject: [PATCH] docs(docker): document container deployment
 
 diff --git a/docker/README.md b/docker/README.md
 new file mode 100644
-index 0000000..c53c1a9
+index 0000000..c967357
 --- /dev/null
 +++ b/docker/README.md
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,183 @@
 +# Running DevSpace in Docker
 +
 +The DevSpace image runs the MCP server on a machine that does not have Node
@@ -34,6 +34,11 @@ index 0000000..c53c1a9
 +  -v /home/me/projects:/workspaces \
 +  ghcr.io/ovlerfork/devspace:latest
 +```
++
++`:latest` tracks the newest published upstream release, which is the
++`1.1.0-beta` line until upstream tags a stable release from the current source
++layout. `:prerelease` names that prerelease explicitly and `:dev` tracks
++upstream `main` plus this fork's patches.
 +
 +Then expose `127.0.0.1:7676` through a tunnel you control and point the MCP
 +client at `https://devspace.example.com/mcp`. Tunnel lifecycle and credentials
@@ -79,11 +84,16 @@ index 0000000..c53c1a9
 +
 +| Tag | Source |
 +| --- | --- |
-+| `latest` | Latest published upstream release. |
-+| `<version>` | Upstream release version, for example `1.0.8`. |
++| `latest` | Newest published upstream release. While upstream is on a prerelease line, this is that prerelease. |
++| `<version>` | Upstream release version, for example `1.1.0-beta.3`. |
 +| `<version>-<source-sha>` | Immutable build of a patched source revision. |
 +| `prerelease`, `prerelease-<sha>` | Newest published upstream prerelease. |
 +| `dev`, `dev-<upstream-sha>` | Upstream `main` plus this fork's patches. |
++
++Upstream tags its releases before the released version reaches `package.json`,
++so image versions come from the release tag. Releases whose tree predates the
++container source layout (no `pnpm-workspace.yaml`, for example `v1.0.8`) are
++skipped: they have no image and never become `latest`.
 +
 +Images are published for `linux/amd64` and `linux/arm64`. Releases built by the
 +fork carry the upstream source revision and this fork's revision as image
@@ -185,10 +195,10 @@ index 0000000..c53c1a9
 +entrypoint regenerate it from the environment.
 diff --git a/docker/compose.tunnel.yaml b/docker/compose.tunnel.yaml
 new file mode 100644
-index 0000000..77a34e0
+index 0000000..a2de5cf
 --- /dev/null
 +++ b/docker/compose.tunnel.yaml
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,55 @@
 +# DevSpace with a Cloudflare Tunnel sidecar.
 +#
 +# The tunnel stays yours: create it in your Cloudflare account, keep the token
@@ -209,6 +219,7 @@ index 0000000..77a34e0
 +
 +services:
 +  devspace:
++    # Channels: :latest (newest upstream release), :prerelease, :dev.
 +    image: ${DEVSPACE_IMAGE:-ghcr.io/ovlerfork/devspace:latest}
 +    container_name: devspace
 +    restart: unless-stopped
@@ -245,10 +256,10 @@ index 0000000..77a34e0
 +  devspace-data:
 diff --git a/docker/compose.yaml b/docker/compose.yaml
 new file mode 100644
-index 0000000..51f1b60
+index 0000000..321da0f
 --- /dev/null
 +++ b/docker/compose.yaml
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,38 @@
 +# DevSpace container deployment.
 +#
 +#   1. Generate an owner token:  openssl rand -hex 32
@@ -262,6 +273,7 @@ index 0000000..51f1b60
 +
 +services:
 +  devspace:
++    # Channels: :latest (newest upstream release), :prerelease, :dev.
 +    image: ${DEVSPACE_IMAGE:-ghcr.io/ovlerfork/devspace:latest}
 +    container_name: devspace
 +    restart: unless-stopped
@@ -288,10 +300,10 @@ index 0000000..51f1b60
 +  devspace-data:
 diff --git a/docker/env.example b/docker/env.example
 new file mode 100644
-index 0000000..01076f3
+index 0000000..2d4dc85
 --- /dev/null
 +++ b/docker/env.example
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,34 @@
 +# Substitution variables for docker/compose.yaml and docker/compose.tunnel.yaml.
 +#
 +# Copy this file to docker/.env and fill in the values; Docker Compose reads a
@@ -313,6 +325,8 @@ index 0000000..01076f3
 +# DEVSPACE_BIND_ADDRESS=127.0.0.1
 +
 +# Common overrides.
++# Image channel: :latest (newest upstream release), :prerelease (newest
++# prerelease), or :dev (upstream main plus this fork's patches).
 +# DEVSPACE_IMAGE=ghcr.io/ovlerfork/devspace:latest
 +# DEVSPACE_ALLOWED_ROOTS=/workspaces
 +# DEVSPACE_TOOL_MODE=codex
