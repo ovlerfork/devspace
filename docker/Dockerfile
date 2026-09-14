@@ -58,10 +58,12 @@ LABEL org.opencontainers.image.title="DevSpace" \
       org.opencontainers.image.revision="${DEVSPACE_SOURCE_SHA}" \
       io.ovlerfork.devspace.upstream.revision="${DEVSPACE_UPSTREAM_SHA}"
 
+# Agent CLIs installed at runtime by the entrypoint live in the data volume, so
+# put that prefix ahead of the image's own binaries on PATH.
 ENV NODE_ENV=production \
     DEVSPACE_CONFIG_DIR=/data/config \
     HOME=/data/home \
-    PATH=/opt/devspace/bin:${PATH}
+    PATH=/data/agents/bin:/opt/devspace/bin:${PATH}
 
 RUN set -eux; \
     apt-get update; \
